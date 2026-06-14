@@ -1,0 +1,1225 @@
+     1→'use client';
+     2→
+     3→import { useState, useEffect, useRef, useCallback } from 'react';
+     4→import { phases, Phase, Topic } from '../lib/curriculum';
+     5→import { problems, Problem, TestCase } from '../lib/problems';
+     6→import { useLearningStore } from '../lib/store';
+     7→import { cn } from '../lib/utils';
+     8→
+     9→// ─── SQL.js Compiler ───────────────────────────────────────────
+    10→type SqlJsDb = {
+    11→  run: (sql: string) => { columns: string[]; values: any[][] };
+    12→  exec: (sql: string) => { columns: string[]; values: any[][] }[];
+    13→  close: () => void;
+    14→};
+    15→
+    16→let sqljsModule: any = null;
+    17→
+    18→async function initSqlJs(): Promise<any> {
+    19→  if (sqljsModule) return sqljsModule;
+    20→  const SQL = await import('sql.js');
+    21→  const module = await (SQL as any).default({
+    22→    locateFile: (file: string) => `https://sql.js.org/dist/${file}`,
+    23→  });
+    24→  sqljsModule = module;
+    25→  return module;
+    26→}
+    27→
+    28→function createDb(SQL: any, schema: string): SqlJsDb {
+    29→  const db = new SQL.Database();
+    30→  db.run(schema);
+    31→  return {
+    32→    run: (sql: string) => {
+    33→      try {
+    34→        const result = db.exec(sql);
+    35→        if (result.length > 0) return { columns: result[0].columns, values: result[0].values };
+    36→        return { columns: [], values: [] };
+    37→      } catch (e: any) {
+    38→        throw new Error(e.message);
+    39→      }
+    40→    },
+    41→    exec: (sql: string) => {
+    42→      try { return db.exec(sql); } catch (e: any) { throw new Error(e.message); }
+    43→    },
+    44→    close: () => db.close(),
+    45→  };
+    46→}
+    47→
+    48→function executeQuery(SQL: any, schema: string, query: string): { columns: string[]; rows: any[][]; error: string | null } {
+    49→  try {
+    50→    const db = createDb(SQL, schema);
+    51→    const result = db.run(query);
+    52→    db.close();
+    53→    return { columns: result.columns, rows: result.values, error: null };
+    54→  } catch (e: any) {
+    55→    return { columns: [], rows: [], error: e.message };
+    56→  }
+    57→}
+    58→
+    59→// ─── Test Case Validation Engine ───────────────────────────────
+    60→export interface TestCaseResult {
+    61→  id: string;
+    62→  description: string;
+    63→  type: string;
+    64→  passed: boolean;
+    65→  message: string;
+    66→  actual?: any;
+    67→  expected?: any;
+    68→}
+    69→
+    70→function normalizeVal(v: any): string {
+    71→  if (v === null || v === undefined) return 'NULL';
+    72→  if (typeof v === 'number') return String(v);
+    73→  return String(v).trim();
+    74→}
+    75→
+    76→function normalizeRow(row: any[]): string[] {
+    77→  return row.map(normalizeVal);
+    78→}
+    79→
+    80→function sortRowsForCompare(rows: any[][]): string[][] {
+    81→  return rows.map(normalizeRow).sort((a, b) => {
+    82→    for (let i = 0; i < Math.min(a.length, b.length); i++) {
+    83→      const cmp = a[i].localeCompare(b[i]);
+    84→      if (cmp !== 0) return cmp;
+    85→    }
+    86→    return 0;
+    87→  });
+    88→}
+    89→
+    90→function rowsEqual(a: any[][], b: any[][]): boolean {
+    91→  const sa = sortRowsForCompare(a);
+    92→  const sb = sortRowsForCompare(b);
+    93→  if (sa.length !== sb.length) return false;
+    94→  for (let i = 0; i < sa.length; i++) {
+    95→    if (sa[i].length !== sb[i].length) return false;
+    96→    for (let j = 0; j < sa[i].length; j++) {
+    97→      if (sa[i][j] !== sb[i][j]) return false;
+    98→    }
+    99→  }
+   100→  return true;
+   101→}
+   102→
+   103→function columnsMatch(expected: string[], actual: string[]): boolean {
+   104→  const e = expected.map(c => c.toLowerCase().trim());
+   105→  const a = actual.map(c => c.toLowerCase().trim());
+   106→  if (e.length !== a.length) return false;
+   107→  return e.every(col => a.includes(col));
+   108→}
+   109→
+   110→function columnsExactOrder(expected: string[], actual: string[]): boolean {
+   111→  const e = expected.map(c => c.toLowerCase().trim());
+   112→  const a = actual.map(c => c.toLowerCase().trim());
+   113→  if (e.length !== a.length) return false;
+   114→  return e.every((col, i) => col === a[i]);
+   115→}
+   116→
+   117→function runTestCases(SQL: any, problem: Problem, userQuery: string): TestCaseResult[] {
+   118→  const results: TestCaseResult[] = [];
+   119→
+   120→  // Run the solution query to get expected result
+   121→  const solutionResult = executeQuery(SQL, problem.schema, problem.solution);
+   122→  if (solutionResult.error) {
+   123→    return problem.testCases.map(tc => ({
+   124→      id: tc.id,
+   125→      description: tc.description,
+   126→      type: tc.type,
+   127→      passed: false,
+   128→      message: `Solution query error: ${solutionResult.error}`,
+   129→    }));
+   130→  }
+   131→
+   132→  // Run the user's query
+   133→  const userResult = executeQuery(SQL, problem.schema, userQuery);
+   134→  if (userResult.error) {
+   135→    return problem.testCases.map(tc => ({
+   136→      id: tc.id,
+   137→      description: tc.description,
+   138→      type: tc.type,
+   139→      passed: false,
+   140→      message: `Query Error: ${userResult.error}`,
+   141→    }));
+   142→  }
+   143→
+   144→  for (const tc of problem.testCases) {
+   145→    const expectedCols = tc.expectedColumns || solutionResult.columns;
+   146→    const expectedRowCount = tc.expectedRowCount ?? solutionResult.rows.length;
+   147→
+   148→    switch (tc.type) {
+   149→      case 'column_match': {
+   150→        const match = columnsMatch(expectedCols, userResult.columns);
+   151→        results.push({
+   152→          id: tc.id,
+   153→          description: tc.description,
+   154→          type: tc.type,
+   155→          passed: match,
+   156→          message: match
+   157→            ? `Column names match (${userResult.columns.join(', ')})`
+   158→            : `Column mismatch. Expected: [${expectedCols.join(', ')}], Got: [${userResult.columns.join(', ')}]`,
+   159→          actual: userResult.columns,
+   160→          expected: expectedCols,
+   161→        });
+   162→        break;
+   163→      }
+   164→
+   165→      case 'column_order': {
+   166→        const match = columnsExactOrder(expectedCols, userResult.columns);
+   167→        results.push({
+   168→          id: tc.id,
+   169→          description: tc.description,
+   170→          type: tc.type,
+   171→          passed: match,
+   172→          message: match
+   173→            ? `Column order matches`
+   174→            : `Column order mismatch. Expected: [${expectedCols.join(', ')}], Got: [${userResult.columns.join(', ')}]`,
+   175→          actual: userResult.columns,
+   176→          expected: expectedCols,
+   177→        });
+   178→        break;
+   179→      }
+   180→
+   181→      case 'row_count': {
+   182→        const match = userResult.rows.length === expectedRowCount;
+   183→        results.push({
+   184→          id: tc.id,
+   185→          description: tc.description,
+   186→          type: tc.type,
+   187→          passed: match,
+   188→          message: match
+   189→            ? `Row count matches: ${userResult.rows.length}`
+   190→            : `Row count mismatch. Expected: ${expectedRowCount}, Got: ${userResult.rows.length}`,
+   191→          actual: userResult.rows.length,
+   192→          expected: expectedRowCount,
+   193→        });
+   194→        break;
+   195→      }
+   196→
+   197→      case 'exact_match': {
+   198→        const colsOk = columnsExactOrder(solutionResult.columns, userResult.columns);
+   199→        const rowsOk = rowsEqual(solutionResult.rows, userResult.rows);
+   200→        const match = colsOk && rowsOk;
+   201→        let msg = '';
+   202→        if (match) {
+   203→          msg = `Exact match! ${userResult.rows.length} rows, ${userResult.columns.length} columns`;
+   204→        } else if (!colsOk) {
+   205→          msg = `Column mismatch. Expected: [${solutionResult.columns.join(', ')}], Got: [${userResult.columns.join(', ')}]`;
+   206→        } else {
+   207→          msg = `Row data mismatch. Expected ${solutionResult.rows.length} rows, Got ${userResult.rows.length} rows`;
+   208→          // Find first differing row
+   209→          const sSorted = sortRowsForCompare(solutionResult.rows);
+   210→          const uSorted = sortRowsForCompare(userResult.rows);
+   211→          const maxCheck = Math.min(3, Math.max(sSorted.length, uSorted.length));
+   212→          for (let i = 0; i < maxCheck; i++) {
+   213→            if (!sSorted[i] || !uSorted[i]) {
+   214→              msg += ` | Row ${i + 1}: ${sSorted[i] ? sSorted[i].join(',') : 'missing'} vs ${uSorted[i] ? uSorted[i].join(',') : 'extra'}`;
+   215→            } else if (sSorted[i].join(',') !== uSorted[i].join(',')) {
+   216→              msg += ` | Row ${i + 1}: expected [${sSorted[i].join(', ')}], got [${uSorted[i].join(', ')}]`;
+   217→              break;
+   218→            }
+   219→          }
+   220→        }
+   221→        results.push({
+   222→          id: tc.id,
+   223→          description: tc.description,
+   224→          type: tc.type,
+   225→          passed: match,
+   226→          message: msg,
+   227→          actual: { columns: userResult.columns, rowCount: userResult.rows.length },
+   228→          expected: { columns: solutionResult.columns, rowCount: solutionResult.rows.length },
+   229→        });
+   230→        break;
+   231→      }
+   232→
+   233→      case 'unordered_match': {
+   234→        const colsOk = columnsMatch(solutionResult.columns, userResult.columns);
+   235→        const rowsOk = rowsEqual(solutionResult.rows, userResult.rows);
+   236→        const match = colsOk && rowsOk;
+   237→        results.push({
+   238→          id: tc.id,
+   239→          description: tc.description,
+   240→          type: tc.type,
+   241→          passed: match,
+   242→          message: match
+   243→            ? `Results match (order-independent)! ${userResult.rows.length} rows`
+   244→            : !colsOk
+   245→              ? `Column mismatch. Expected: [${solutionResult.columns.join(', ')}], Got: [${userResult.columns.join(', ')}]`
+   246→              : `Row data mismatch despite correct columns. Expected ${solutionResult.rows.length} rows, Got ${userResult.rows.length}`,
+   247→          actual: { columns: userResult.columns, rowCount: userResult.rows.length },
+   248→          expected: { columns: solutionResult.columns, rowCount: solutionResult.rows.length },
+   249→        });
+   250→        break;
+   251→      }
+   252→
+   253→      case 'not_empty': {
+   254→        const match = userResult.rows.length > 0 && userResult.columns.length > 0;
+   255→        results.push({
+   256→          id: tc.id,
+   257→          description: tc.description,
+   258→          type: tc.type,
+   259→          passed: match,
+   260→          message: match
+   261→            ? `Query returns ${userResult.rows.length} rows`
+   262→            : 'Query returned no results',
+   263→          actual: userResult.rows.length,
+   264→          expected: '> 0',
+   265→        });
+   266→        break;
+   267→      }
+   268→
+   269→      case 'sorted_order': {
+   270→        const sortColIdx = tc.sortColumn ?? 0;
+   271→        const sortDir = tc.sortDirection ?? 'ASC';
+   272→        let isSorted = true;
+   273→        if (userResult.rows.length > 1) {
+   274→          for (let i = 1; i < userResult.rows.length; i++) {
+   275→            const prev = normalizeVal(userResult.rows[i - 1][sortColIdx]);
+   276→            const curr = normalizeVal(userResult.rows[i][sortColIdx]);
+   277→            if (sortDir === 'ASC' && prev.localeCompare(curr) > 0) { isSorted = false; break; }
+   278→            if (sortDir === 'DESC' && prev.localeCompare(curr) < 0) { isSorted = false; break; }
+   279→          }
+   280→        }
+   281→        const colName = userResult.columns[sortColIdx] || `column ${sortColIdx}`;
+   282→        results.push({
+   283→          id: tc.id,
+   284→          description: tc.description,
+   285→          type: tc.type,
+   286→          passed: isSorted,
+   287→          message: isSorted
+   288→            ? `Results sorted by ${colName} (${sortDir})`
+   289→            : `Results NOT sorted by ${colName} (${sortDir})`,
+   290→          actual: 'See query output',
+   291→          expected: `Sorted ${sortDir} by ${colName}`,
+   292→        });
+   293→        break;
+   294→      }
+   295→
+   296→      default: {
+   297→        results.push({
+   298→          id: tc.id,
+   299→          description: tc.description,
+   300→          type: tc.type,
+   301→          passed: false,
+   302→          message: `Unknown test type: ${tc.type}`,
+   303→        });
+   304→      }
+   305→    }
+   306→  }
+   307→
+   308→  return results;
+   309→}
+   310→
+   311→// ─── Icons ─────────────────────────────────────────────────────
+   312→function BookOpen({ className }: { className?: string }) {
+   313→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>;
+   314→}
+   315→function Code({ className }: { className?: string }) {
+   316→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>;
+   317→}
+   318→function CheckCircle({ className }: { className?: string }) {
+   319→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>;
+   320→}
+   321→function XCircle({ className }: { className?: string }) {
+   322→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>;
+   323→}
+   324→function Play({ className }: { className?: string }) {
+   325→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>;
+   326→}
+   327→function ChevronRight({ className }: { className?: string }) {
+   328→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"/></svg>;
+   329→}
+   330→function ChevronDown({ className }: { className?: string }) {
+   331→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9"/></svg>;
+   332→}
+   333→function Menu({ className }: { className?: string }) {
+   334→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>;
+   335→}
+   336→function X({ className }: { className?: string }) {
+   337→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>;
+   338→}
+   339→function Lightbulb({ className }: { className?: string }) {
+   340→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M9 18h6"/><path d="M10 22h4"/><path d="M15.09 14c.18-.98.65-1.74 1.41-2.5A4.65 4.65 0 0 0 18 8 6 6 0 0 0 6 8c0 1 .23 2.23 1.5 3.5A4.61 4.61 0 0 1 8.91 14"/></svg>;
+   341→}
+   342→function AlertTriangle({ className }: { className?: string }) {
+   343→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>;
+   344→}
+   345→function Eye({ className }: { className?: string }) {
+   346→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>;
+   347→}
+   348→function EyeOff({ className }: { className?: string }) {
+   349→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>;
+   350→}
+   351→function Trophy({ className }: { className?: string }) {
+   352→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/><path d="M4 22h16"/><path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"/><path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"/><path d="M18 2H6v7a6 6 0 0 0 12 0V2Z"/></svg>;
+   353→}
+   354→function Flask({ className }: { className?: string }) {
+   355→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M9 3h6"/><path d="M10 9V3h4v6l5 8.5a2 2 0 0 1-1.7 3H6.7a2 2 0 0 1-1.7-3L10 9z"/></svg>;
+   356→}
+   357→function Terminal({ className }: { className?: string }) {
+   358→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>;
+   359→}
+   360→
+   361→// ─── Result Table Component ────────────────────────────────────
+   362→function ResultTable({ columns, rows, maxRows = 50, highlight }: { columns: string[]; rows: any[][]; maxRows?: number; highlight?: boolean }) {
+   363→  if (columns.length === 0 && rows.length === 0) return <div className="text-slate-500 text-sm italic p-3">Query executed successfully (no results to display)</div>;
+   364→  const displayRows = rows.slice(0, maxRows);
+   365→  return (
+   366→    <div className="overflow-x-auto">
+   367→      <table className="sql-table">
+   368→        <thead>
+   369→          <tr>{columns.map((col, i) => <th key={i}>{col}</th>)}</tr>
+   370→        </thead>
+   371→        <tbody>
+   372→          {displayRows.map((row, ri) => (
+   373→            <tr key={ri}>{row.map((cell, ci) => <td key={ci} className={highlight ? 'py-1 text-xs' : ''}>{cell === null ? <span className="text-slate-500 italic">NULL</span> : String(cell)}</td>)}</tr>
+   374→          ))}
+   375→        </tbody>
+   376→      </table>
+   377→      {rows.length > maxRows && <div className="text-xs text-slate-500 mt-1 px-2">Showing {maxRows} of {rows.length} rows</div>}
+   378→    </div>
+   379→  );
+   380→}
+   381→
+   382→// ─── SQL Editor Component ──────────────────────────────────────
+   383→function SqlEditor({ initialCode, onRun, schema, sqlReady, SQL, runLabel }: { initialCode: string; onRun: (result: { columns: string[]; rows: any[][]; error: string | null }, query: string) => void; schema: string; sqlReady: boolean; SQL: any; runLabel?: string }) {
+   384→  const [code, setCode] = useState(initialCode);
+   385→  const textareaRef = useRef<HTMLTextAreaElement>(null);
+   386→
+   387→  useEffect(() => { setCode(initialCode); }, [initialCode]);
+   388→
+   389→  const handleRun = useCallback(() => {
+   390→    if (!sqlReady || !SQL) return;
+   391→    const result = executeQuery(SQL, schema, code);
+   392→    onRun(result, code);
+   393→  }, [code, schema, sqlReady, SQL, onRun]);
+   394→
+   395→  const handleKeyDown = (e: React.KeyboardEvent) => {
+   396→    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); handleRun(); }
+   397→    if (e.key === 'Tab') {
+   398→      e.preventDefault();
+   399→      const textarea = textareaRef.current;
+   400→      if (textarea) {
+   401→        const start = textarea.selectionStart;
+   402→        const end = textarea.selectionEnd;
+   403→        const newCode = code.substring(0, start) + '  ' + code.substring(end);
+   404→        setCode(newCode);
+   405→        setTimeout(() => { textarea.selectionStart = textarea.selectionEnd = start + 2; }, 0);
+   406→      }
+   407→    }
+   408→  };
+   409→
+   410→  return (
+   411→    <div className="relative">
+   412→      <textarea
+   413→        ref={textareaRef}
+   414→        value={code}
+   415→        onChange={(e) => setCode(e.target.value)}
+   416→        onKeyDown={handleKeyDown}
+   417→        className="w-full bg-slate-950 text-emerald-300 font-mono text-sm p-4 rounded-lg border border-slate-700 focus:border-emerald-500 focus:outline-none resize-y min-h-[120px]"
+   418→        placeholder="-- Write your SQL query here...&#10;SELECT * FROM employees;"
+   419→        spellCheck={false}
+   420→      />
+   421→      <button
+   422→        onClick={handleRun}
+   423→        disabled={!sqlReady}
+   424→        className={cn(
+   425→          "absolute top-2 right-2 flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-all",
+   426→          sqlReady
+   427→            ? "bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-900/50"
+   428→            : "bg-slate-700 text-slate-400 cursor-not-allowed"
+   429→        )}
+   430→      >
+   431→        <Play className="w-3 h-3" /> {runLabel || 'Run'} {sqlReady ? '(Ctrl+Enter)' : 'Loading...'}
+   432→      </button>
+   433→    </div>
+   434→  );
+   435→}
+   436→
+   437→// ─── Checkpoint Quiz ───────────────────────────────────────────
+   438→function CheckpointQuiz({ checkpoint, onComplete }: { checkpoint: Topic['checkpoint']; onComplete: () => void }) {
+   439→  const [selected, setSelected] = useState<number | null>(null);
+   440→  const [showResult, setShowResult] = useState(false);
+   441→
+   442→  const handleSelect = (idx: number) => {
+   443→    if (showResult) return;
+   444→    setSelected(idx);
+   445→    setShowResult(true);
+   446→    if (idx === checkpoint.answer) onComplete();
+   447→  };
+   448→
+   449→  return (
+   450→    <div className="bg-slate-800/50 rounded-xl p-5 border border-slate-700">
+   451→      <h4 className="text-amber-400 font-semibold mb-3 flex items-center gap-2">
+   452→        <Lightbulb className="w-4 h-4" /> Quick Check
+   453→      </h4>
+   454→      <p className="text-slate-200 mb-4 text-sm">{checkpoint.question}</p>
+   455→      <div className="space-y-2">
+   456→        {checkpoint.options.map((opt, i) => (
+   457→          <button
+   458→            key={i}
+   459→            onClick={() => handleSelect(i)}
+   460→            className={cn(
+   461→              "w-full text-left px-4 py-2.5 rounded-lg text-sm transition-all border",
+   462→              !showResult && "border-slate-600 hover:border-emerald-500 hover:bg-slate-700/50 text-slate-300",
+   463→              showResult && i === checkpoint.answer && "border-emerald-500 bg-emerald-900/30 text-emerald-300",
+   464→              showResult && i === selected && i !== checkpoint.answer && "border-red-500 bg-red-900/30 text-red-300",
+   465→              showResult && i !== selected && i !== checkpoint.answer && "border-slate-700 text-slate-500"
+   466→            )}
+   467→          >
+   468→            <span className="font-mono mr-2">{String.fromCharCode(65 + i)}.</span>{opt}
+   469→          </button>
+   470→        ))}
+   471→      </div>
+   472→      {showResult && (
+   473→        <div className={cn("mt-3 p-3 rounded-lg text-sm", selected === checkpoint.answer ? "bg-emerald-900/20 text-emerald-300" : "bg-amber-900/20 text-amber-300")}>
+   474→          {selected === checkpoint.answer ? "Correct! " : "Not quite. "}
+   475→          {checkpoint.explanation}
+   476→        </div>
+   477→      )}
+   478→    </div>
+   479→  );
+   480→}
+   481→
+   482→// ─── Test Case Results Panel ───────────────────────────────────
+   483→function TestCaseResults({ results, onShowExpected }: { results: TestCaseResult[]; onShowExpected: (result: TestCaseResult) => void }) {
+   484→  const passed = results.filter(r => r.passed).length;
+   485→  const total = results.length;
+   486→  const allPassed = passed === total;
+   487→
+   488→  return (
+   489→    <div className="bg-slate-900 rounded-xl border border-slate-700 overflow-hidden">
+   490→      <div className={cn(
+   491→        "px-4 py-2.5 border-b border-slate-700 flex items-center justify-between",
+   492→        allPassed ? "bg-emerald-900/20" : "bg-red-900/10"
+   493→      )}>
+   494→        <div className="flex items-center gap-2">
+   495→          {allPassed ? (
+   496→            <CheckCircle className="w-4 h-4 text-emerald-400" />
+   497→          ) : (
+   498→            <XCircle className="w-4 h-4 text-red-400" />
+   499→          )}
+   500→          <span className={cn("text-sm font-semibold", allPassed ? "text-emerald-400" : "text-red-400")}>
+   501→            {allPassed ? 'All Test Cases Passed!' : `${passed}/${total} Test Cases Passed`}
+   502→          </span>
+   503→        </div>
+   504→        <div className="flex items-center gap-1.5">
+   505→          <div className="w-24 bg-slate-700 rounded-full h-2">
+   506→            <div
+   507→              className={cn("rounded-full h-2 transition-all duration-500", allPassed ? "bg-emerald-500" : "bg-amber-500")}
+   508→              style={{ width: `${total > 0 ? (passed / total) * 100 : 0}%` }}
+   509→            />
+   510→          </div>
+   511→          <span className="text-xs text-slate-400">{passed}/{total}</span>
+   512→        </div>
+   513→      </div>
+   514→      <div className="divide-y divide-slate-800">
+   515→        {results.map((result, idx) => (
+   516→          <div key={result.id} className="px-4 py-3 hover:bg-slate-800/30 transition-colors">
+   517→            <div className="flex items-start gap-3">
+   518→              <div className="flex-shrink-0 mt-0.5">
+   519→                {result.passed ? (
+   520→                  <CheckCircle className="w-4 h-4 text-emerald-400" />
+   521→                ) : (
+   522→                  <XCircle className="w-4 h-4 text-red-400" />
+   523→                )}
+   524→              </div>
+   525→              <div className="flex-1 min-w-0">
+   526→                <div className="flex items-center gap-2 mb-1">
+   527→                  <span className={cn(
+   528→                    "text-[10px] px-1.5 py-0.5 rounded font-mono font-semibold border",
+   529→                    result.passed
+   530→                      ? "text-emerald-400 bg-emerald-900/20 border-emerald-800"
+   531→                      : "text-red-400 bg-red-900/20 border-red-800"
+   532→                  )}>
+   533→                    {result.type.replace('_', ' ').toUpperCase()}
+   534→                  </span>
+   535→                  <span className={cn("text-xs font-medium", result.passed ? "text-slate-300" : "text-slate-200")}>
+   536→                    Test {idx + 1}: {result.description}
+   537→                  </span>
+   538→                </div>
+   539→                <p className={cn("text-xs", result.passed ? "text-emerald-400/70" : "text-red-400/80")}>
+   540→                  {result.message}
+   541→                </p>
+   542→                {!result.passed && result.expected !== undefined && (
+   543→                  <button
+   544→                    onClick={() => onShowExpected(result)}
+   545→                    className="mt-1.5 text-[10px] text-slate-500 hover:text-amber-400 transition-colors underline"
+   546→                  >
+   547→                    View expected vs actual
+   548→                  </button>
+   549→                )}
+   550→              </div>
+   551→              <span className={cn(
+   552→                "text-xs font-bold flex-shrink-0",
+   553→                result.passed ? "text-emerald-500" : "text-red-500"
+   554→              )}>
+   555→                {result.passed ? 'PASS' : 'FAIL'}
+   556→              </span>
+   557→            </div>
+   558→          </div>
+   559→        ))}
+   560→      </div>
+   561→    </div>
+   562→  );
+   563→}
+   564→
+   565→// ─── Learn Mode ────────────────────────────────────────────────
+   566→function LearnMode({ SQL, sqlReady }: { SQL: any; sqlReady: boolean }) {
+   567→  const { currentTopicId, setCurrentTopic, completedTopics, toggleComplete, isCompleted } = useLearningStore();
+   568→  const [expandedPhase, setExpandedPhase] = useState<string>('1');
+   569→  const [queryResult, setQueryResult] = useState<{ columns: string[]; rows: any[][]; error: string | null } | null>(null);
+   570→  const [activeSection, setActiveSection] = useState<'story' | 'steps' | 'code' | 'syntax' | 'mistakes' | 'quiz'>('story');
+   571→  const { sidebarOpen, setSidebarOpen } = useLearningStore();
+   572→
+   573→  const currentTopic = phases.flatMap(p => p.topics).find(t => t.id === currentTopicId) || phases[0].topics[0];
+   574→
+   575→  const allTopics = phases.flatMap(p => p.topics);
+   576→  const currentIdx = allTopics.findIndex(t => t.id === currentTopic.id);
+   577→  const prevTopic = currentIdx > 0 ? allTopics[currentIdx - 1] : null;
+   578→  const nextTopic = currentIdx < allTopics.length - 1 ? allTopics[currentIdx + 1] : null;
+   579→
+   580→  const completedCount = completedTopics.length;
+   581→  const totalCount = allTopics.length;
+   582→
+   583→  useEffect(() => { setQueryResult(null); setActiveSection('story'); }, [currentTopicId]);
+   584→
+   585→  const handleQueryResult = useCallback((result: { columns: string[]; rows: any[][]; error: string | null }) => {
+   586→    setQueryResult(result);
+   587→  }, []);
+   588→
+   589→  const sections = [
+   590→    { id: 'story' as const, label: 'Concept', icon: <BookOpen className="w-3.5 h-3.5" /> },
+   591→    { id: 'steps' as const, label: 'Step-by-Step', icon: <Code className="w-3.5 h-3.5" /> },
+   592→    { id: 'code' as const, label: 'Try It', icon: <Play className="w-3.5 h-3.5" /> },
+   593→    { id: 'syntax' as const, label: 'Syntax', icon: <BookOpen className="w-3.5 h-3.5" /> },
+   594→    { id: 'mistakes' as const, label: 'Pitfalls', icon: <AlertTriangle className="w-3.5 h-3.5" /> },
+   595→    { id: 'quiz' as const, label: 'Quiz', icon: <CheckCircle className="w-3.5 h-3.5" /> },
+   596→  ];
+   597→
+   598→  return (
+   599→    <div className="flex h-[calc(100vh-3.5rem)]">
+   600→      {/* Sidebar */}
+   601→      <div className={cn(
+   602→        "fixed inset-y-0 left-0 z-40 w-72 bg-slate-900 border-r border-slate-800 transform transition-transform duration-200 lg:relative lg:translate-x-0",
+   603→        sidebarOpen ? "translate-x-0" : "-translate-x-full"
+   604→      )}>
+   605→        <div className="flex items-center justify-between p-4 border-b border-slate-800">
+   606→          <div className="flex items-center gap-2">
+   607→            <span className="text-lg">🗃️</span>
+   608→            <span className="font-bold text-emerald-400">SQL Mastery</span>
+   609→          </div>
+   610→          <button onClick={() => setSidebarOpen(false)} className="lg:hidden text-slate-400 hover:text-white"><X className="w-5 h-5" /></button>
+   611→        </div>
+   612→
+   613→        {/* Progress */}
+   614→        <div className="px-4 py-3 border-b border-slate-800">
+   615→          <div className="flex justify-between text-xs text-slate-400 mb-1.5">
+   616→            <span>Progress</span>
+   617→            <span>{completedCount}/{totalCount} topics</span>
+   618→          </div>
+   619→          <div className="w-full bg-slate-700 rounded-full h-2">
+   620→            <div className="bg-emerald-500 rounded-full h-2 transition-all duration-500" style={{ width: `${totalCount > 0 ? (completedCount / totalCount) * 100 : 0}%` }} />
+   621→          </div>
+   622→        </div>
+   623→
+   624→        {/* Topics */}
+   625→        <div className="overflow-y-auto flex-1 p-2" style={{ maxHeight: 'calc(100vh - 10rem)' }}>
+   626→          {phases.map(phase => (
+   627→            <div key={phase.id} className="mb-1">
+   628→              <button
+   629→                onClick={() => setExpandedPhase(expandedPhase === phase.id ? '' : phase.id)}
+   630→                className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-slate-300 hover:bg-slate-800 transition-colors"
+   631→              >
+   632→                <span>{phase.icon}</span>
+   633→                <span className="flex-1 text-left">{phase.title}</span>
+   634→                {expandedPhase === phase.id ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+   635→              </button>
+   636→              {expandedPhase === phase.id && (
+   637→                <div className="ml-4 space-y-0.5 animate-fade-in">
+   638→                  {phase.topics.map(topic => (
+   639→                    <button
+   640→                      key={topic.id}
+   641→                      onClick={() => { setCurrentTopic(topic.id); setSidebarOpen(false); }}
+   642→                      className={cn(
+   643→                        "w-full flex items-center gap-2 px-3 py-2 rounded-md text-xs transition-all text-left",
+   644→                        currentTopicId === topic.id ? "bg-emerald-900/40 text-emerald-300 border border-emerald-800" : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
+   645→                      )}
+   646→                    >
+   647→                      {isCompleted(topic.id) ? <CheckCircle className="w-3.5 h-3.5 text-emerald-500 flex-shrink-0" /> : <div className="w-3.5 h-3.5 rounded-full border border-slate-600 flex-shrink-0" />}
+   648→                      <span className="truncate">{topic.id} — {topic.title}</span>
+   649→                    </button>
+   650→                  ))}
+   651→                </div>
+   652→              )}
+   653→            </div>
+   654→          ))}
+   655→        </div>
+   656→      </div>
+   657→
+   658→      {/* Overlay for mobile sidebar */}
+   659→      {sidebarOpen && <div className="fixed inset-0 z-30 bg-black/50 lg:hidden" onClick={() => setSidebarOpen(false)} />}
+   660→
+   661→      {/* Main Content */}
+   662→      <div className="flex-1 overflow-y-auto">
+   663→        {/* Top bar */}
+   664→        <div className="sticky top-0 z-10 bg-slate-950/90 backdrop-blur-sm border-b border-slate-800 px-4 py-2.5 flex items-center gap-3">
+   665→          <button onClick={() => setSidebarOpen(true)} className="lg:hidden text-slate-400 hover:text-white"><Menu className="w-5 h-5" /></button>
+   666→          <div className="flex-1 min-w-0">
+   667→            <h2 className="text-sm font-semibold text-slate-200 truncate">{currentTopic.id} — {currentTopic.title}</h2>
+   668→          </div>
+   669→          <button
+   670→            onClick={() => toggleComplete(currentTopic.id)}
+   671→            className={cn(
+   672→              "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all",
+   673→              isCompleted(currentTopic.id) ? "bg-emerald-900/40 text-emerald-400 border border-emerald-800" : "bg-slate-800 text-slate-400 hover:text-slate-200 border border-slate-700"
+   674→            )}
+   675→          >
+   676→            <CheckCircle className="w-3.5 h-3.5" />
+   677→            {isCompleted(currentTopic.id) ? 'Completed' : 'Mark Done'}
+   678→          </button>
+   679→        </div>
+   680→
+   681→        {/* Section tabs */}
+   682→        <div className="border-b border-slate-800 px-4 flex gap-1 overflow-x-auto">
+   683→          {sections.map(s => (
+   684→            <button
+   685→              key={s.id}
+   686→              onClick={() => setActiveSection(s.id)}
+   687→              className={cn(
+   688→                "flex items-center gap-1.5 px-3 py-2.5 text-xs font-medium border-b-2 transition-all whitespace-nowrap",
+   689→                activeSection === s.id ? "border-emerald-500 text-emerald-400" : "border-transparent text-slate-500 hover:text-slate-300"
+   690→              )}
+   691→            >
+   692→              {s.icon} {s.label}
+   693→            </button>
+   694→          ))}
+   695→        </div>
+   696→
+   697→        {/* Content */}
+   698→        <div className="p-4 max-w-4xl mx-auto animate-fade-in">
+   699→          {/* Concept */}
+   700→          {activeSection === 'story' && (
+   701→            <div className="space-y-6">
+   702→              <div className="whitespace-pre-line text-slate-300 leading-relaxed text-sm">{currentTopic.story}</div>
+   703→              <div className="bg-slate-900 rounded-xl p-4 border border-slate-700">
+   704→                <h4 className="text-xs font-semibold text-slate-400 mb-2 uppercase tracking-wider">Visual</h4>
+   705→                <pre className="text-emerald-300/80 text-xs leading-relaxed overflow-x-auto">{currentTopic.tableViz}</pre>
+   706→              </div>
+   707→              <div className="flex flex-wrap gap-2">
+   708→                {currentTopic.subtopics.map(st => (
+   709→                  <span key={st} className="px-2.5 py-1 rounded-full text-xs bg-slate-800 text-slate-400 border border-slate-700">{st}</span>
+   710→                ))}
+   711→              </div>
+   712→            </div>
+   713→          )}
+   714→
+   715→          {/* Step-by-step */}
+   716→          {activeSection === 'steps' && (
+   717→            <div className="space-y-4">
+   718→              <h3 className="text-sm font-semibold text-slate-200">Step-by-Step Breakdown</h3>
+   719→              {currentTopic.stepByStep.map((step, i) => (
+   720→                <div key={i} className="bg-slate-900 rounded-xl p-4 border border-slate-700">
+   721→                  <div className="flex items-start gap-3">
+   722→                    <span className="flex-shrink-0 w-6 h-6 rounded-full bg-emerald-900/50 text-emerald-400 flex items-center justify-center text-xs font-bold">{i + 1}</span>
+   723→                    <div className="flex-1 space-y-2">
+   724→                      <code className="text-amber-300 text-sm font-mono block bg-slate-950 px-3 py-2 rounded-md">{step.line}</code>
+   725→                      <p className="text-slate-300 text-sm">{step.explanation}</p>
+   726→                      <p className="text-emerald-400/80 text-xs font-medium">Result: {step.result}</p>
+   727→                    </div>
+   728→                  </div>
+   729→                </div>
+   730→              ))}
+   731→            </div>
+   732→          )}
+   733→
+   734→          {/* Try It (Code) */}
+   735→          {activeSection === 'code' && (
+   736→            <div className="space-y-4">
+   737→              <div className="flex items-center justify-between">
+   738→                <h3 className="text-sm font-semibold text-slate-200">SQL Playground</h3>
+   739→                <span className="text-xs text-slate-500">Ctrl+Enter to run</span>
+   740→              </div>
+   741→              <SqlEditor
+   742→                initialCode={currentTopic.code}
+   743→                onRun={(result) => setQueryResult(result)}
+   744→                schema={currentTopic.schema}
+   745→                sqlReady={sqlReady}
+   746→                SQL={SQL}
+   747→              />
+   748→              {queryResult && (
+   749→                <div className="bg-slate-900 rounded-xl border border-slate-700 overflow-hidden">
+   750→                  <div className="px-4 py-2 border-b border-slate-700 flex items-center gap-2">
+   751→                    {queryResult.error ? (
+   752→                      <span className="text-red-400 text-xs font-semibold">Error</span>
+   753→                    ) : (
+   754→                      <span className="text-emerald-400 text-xs font-semibold">Result ({queryResult.rows.length} rows)</span>
+   755→                    )}
+   756→                  </div>
+   757→                  {queryResult.error ? (
+   758→                    <div className="p-4 text-red-400 text-sm font-mono">{queryResult.error}</div>
+   759→                  ) : (
+   760→                    <ResultTable columns={queryResult.columns} rows={queryResult.rows} />
+   761→                  )}
+   762→                </div>
+   763→              )}
+   764→            </div>
+   765→          )}
+   766→
+   767→          {/* Syntax Card */}
+   768→          {activeSection === 'syntax' && (
+   769→            <div className="space-y-4">
+   770→              <div className="bg-slate-900 rounded-xl p-5 border border-emerald-900/30">
+   771→                <h4 className="text-emerald-400 font-semibold text-sm mb-3">{currentTopic.syntaxCard.title}</h4>
+   772→                <pre className="text-amber-300/90 text-sm leading-relaxed overflow-x-auto whitespace-pre-wrap">{currentTopic.syntaxCard.content}</pre>
+   773→              </div>
+   774→            </div>
+   775→          )}
+   776→
+   777→          {/* Common Mistakes */}
+   778→          {activeSection === 'mistakes' && (
+   779→            <div className="space-y-4">
+   780→              <h3 className="text-sm font-semibold text-slate-200">Common Mistakes to Avoid</h3>
+   781→              {currentTopic.mistakes.map((m, i) => (
+   782→                <div key={i} className="bg-slate-900 rounded-xl p-4 border border-red-900/20">
+   783→                  <div className="space-y-3">
+   784→                    <div className="flex items-start gap-2">
+   785→                      <span className="text-red-400 text-xs font-bold mt-0.5">WRONG</span>
+   786→                      <code className="text-red-300/80 text-sm font-mono flex-1">{m.wrong}</code>
+   787→                    </div>
+   788→                    <div className="flex items-start gap-2">
+   789→                      <span className="text-emerald-400 text-xs font-bold mt-0.5">RIGHT</span>
+   790→                      <code className="text-emerald-300/80 text-sm font-mono flex-1">{m.correct}</code>
+   791→                    </div>
+   792→                    <p className="text-slate-400 text-xs pl-12">{m.explanation}</p>
+   793→                  </div>
+   794→                </div>
+   795→              ))}
+   796→            </div>
+   797→          )}
+   798→
+   799→          {/* Quiz */}
+   800→          {activeSection === 'quiz' && (
+   801→            <CheckpointQuiz
+   802→              checkpoint={currentTopic.checkpoint}
+   803→              onComplete={() => {
+   804→                if (!isCompleted(currentTopic.id)) toggleComplete(currentTopic.id);
+   805→              }}
+   806→            />
+   807→          )}
+   808→
+   809→          {/* Navigation */}
+   810→          <div className="flex justify-between items-center mt-8 pt-4 border-t border-slate-800">
+   811→            {prevTopic ? (
+   812→              <button
+   813→                onClick={() => setCurrentTopic(prevTopic.id)}
+   814→                className="flex items-center gap-1 text-xs text-slate-400 hover:text-emerald-400 transition-colors"
+   815→              >
+   816→                <ChevronRight className="w-3 h-3 rotate-180" /> {prevTopic.id} {prevTopic.title}
+   817→              </button>
+   818→            ) : <div />}
+   819→            {nextTopic ? (
+   820→              <button
+   821→                onClick={() => setCurrentTopic(nextTopic.id)}
+   822→                className="flex items-center gap-1 text-xs text-slate-400 hover:text-emerald-400 transition-colors"
+   823→              >
+   824→                {nextTopic.id} {nextTopic.title} <ChevronRight className="w-3 h-3" />
+   825→              </button>
+   826→            ) : <div />}
+   827→          </div>
+   828→        </div>
+   829→      </div>
+   830→    </div>
+   831→  );
+   832→}
+   833→
+   834→// ─── Practice Mode ─────────────────────────────────────────────
+   835→function PracticeMode({ SQL, sqlReady }: { SQL: any; sqlReady: boolean }) {
+   836→  const { practiceFilter, setPracticeFilter, practiceCategory, setPracticeCategory, completedProblems, toggleProblemComplete, isProblemCompleted, currentProblemId, setCurrentProblem } = useLearningStore();
+   837→  const [queryResult, setQueryResult] = useState<{ columns: string[]; rows: any[][]; error: string | null } | null>(null);
+   838→  const [testResults, setTestResults] = useState<TestCaseResult[] | null>(null);
+   839→  const [showHint, setShowHint] = useState(false);
+   840→  const [showSolution, setShowSolution] = useState(false);
+   841→  const [solved, setSolved] = useState(false);
+   842→  const [activeResultTab, setActiveResultTab] = useState<'output' | 'tests'>('tests');
+   843→  const [showDiffModal, setShowDiffModal] = useState<TestCaseResult | null>(null);
+   844→  const [lastQuery, setLastQuery] = useState<string>('');
+   845→  const { sidebarOpen, setSidebarOpen } = useLearningStore();
+   846→
+   847→  const categories = ['all', ...Array.from(new Set(problems.map(p => p.category)))];
+   848→  const filteredProblems = problems.filter(p => {
+   849→    if (practiceFilter !== 'all' && p.difficulty !== practiceFilter) return false;
+   850→    if (practiceCategory !== 'all' && p.category !== practiceCategory) return false;
+   851→    return true;
+   852→  });
+   853→
+   854→  const currentProblem = currentProblemId ? problems.find(p => p.id === currentProblemId) : null;
+   855→  const completedCount = completedProblems.length;
+   856→
+   857→  useEffect(() => {
+   858→    setQueryResult(null);
+   859→    setTestResults(null);
+   860→    setShowHint(false);
+   861→    setShowSolution(false);
+   862→    setSolved(false);
+   863→    setActiveResultTab('tests');
+   864→    setShowDiffModal(null);
+   865→  }, [currentProblemId]);
+   866→
+   867→  const handleQueryResult = useCallback((result: { columns: string[]; rows: any[][]; error: string | null }, query: string) => {
+   868→    setQueryResult(result);
+   869→    setLastQuery(query);
+   870→    setTestResults(null);
+   871→
+   872→    if (!result.error && currentProblem && SQL) {
+   873→      // Run full test case validation
+   874→      const tcResults = runTestCases(SQL, currentProblem, query);
+   875→      setTestResults(tcResults);
+   876→
+   877→      const allPassed = tcResults.every(r => r.passed);
+   878→      if (allPassed) {
+   879→        setSolved(true);
+   880→        if (!isProblemCompleted(currentProblem.id)) toggleProblemComplete(currentProblem.id);
+   881→      } else {
+   882→        setSolved(false);
+   883→      }
+   884→      setActiveResultTab('tests');
+   885→    }
+   886→  }, [currentProblem, SQL, isProblemCompleted, toggleProblemComplete]);
+   887→
+   888→  const handleRunTests = useCallback(() => {
+   889→    if (!currentProblem || !SQL || !lastQuery) return;
+   890→    const result = executeQuery(SQL, currentProblem.schema, lastQuery);
+   891→    setQueryResult(result);
+   892→    if (!result.error) {
+   893→      const tcResults = runTestCases(SQL, currentProblem, lastQuery);
+   894→      setTestResults(tcResults);
+   895→      const allPassed = tcResults.every(r => r.passed);
+   896→      if (allPassed) {
+   897→        setSolved(true);
+   898→        if (!isProblemCompleted(currentProblem.id)) toggleProblemComplete(currentProblem.id);
+   899→      } else {
+   900→        setSolved(false);
+   901→      }
+   902→    }
+   903→  }, [currentProblem, SQL, lastQuery, isProblemCompleted, toggleProblemComplete]);
+   904→
+   905→  const difficultyColor = (d: string) => d === 'Easy' ? 'text-emerald-400 bg-emerald-900/20 border-emerald-800' : d === 'Medium' ? 'text-amber-400 bg-amber-900/20 border-amber-800' : 'text-red-400 bg-red-900/20 border-red-800';
+   906→
+   907→  return (
+   908→    <div className="flex h-[calc(100vh-3.5rem)]">
+   909→      {/* Sidebar */}
+   910→      <div className={cn(
+   911→        "fixed inset-y-0 left-0 z-40 w-72 bg-slate-900 border-r border-slate-800 transform transition-transform duration-200 lg:relative lg:translate-x-0",
+   912→        sidebarOpen ? "translate-x-0" : "-translate-x-full"
+   913→      )}>
+   914→        <div className="flex items-center justify-between p-4 border-b border-slate-800">
+   915→          <div className="flex items-center gap-2">
+   916→            <Trophy className="w-5 h-5 text-amber-400" />
+   917→            <span className="font-bold text-amber-400">Practice</span>
+   918→          </div>
+   919→          <button onClick={() => setSidebarOpen(false)} className="lg:hidden text-slate-400 hover:text-white"><X className="w-5 h-5" /></button>
+   920→        </div>
+   921→
+   922→        {/* Progress & Filters */}
+   923→        <div className="px-4 py-3 border-b border-slate-800 space-y-3">
+   924→          <div className="flex justify-between text-xs text-slate-400">
+   925→            <span>Solved</span>
+   926→            <span>{completedCount}/{problems.length} problems</span>
+   927→          </div>
+   928→          <div className="w-full bg-slate-700 rounded-full h-2">
+   929→            <div className="bg-amber-500 rounded-full h-2 transition-all duration-500" style={{ width: `${problems.length > 0 ? (completedCount / problems.length) * 100 : 0}%` }} />
+   930→          </div>
+   931→          <div className="flex gap-1 flex-wrap">
+   932→            {(['all', 'Easy', 'Medium', 'Hard'] as const).map(f => (
+   933→              <button
+   934→                key={f}
+   935→                onClick={() => setPracticeFilter(f)}
+   936→                className={cn(
+   937→                  "px-2.5 py-1 rounded-md text-xs font-medium transition-all",
+   938→                  practiceFilter === f ? "bg-slate-700 text-white" : "text-slate-500 hover:text-slate-300"
+   939→                )}
+   940→              >{f === 'all' ? 'All' : f}</button>
+   941→            ))}
+   942→          </div>
+   943→          <select
+   944→            value={practiceCategory}
+   945→            onChange={(e) => setPracticeCategory(e.target.value)}
+   946→            className="w-full bg-slate-800 text-slate-300 text-xs rounded-lg px-3 py-2 border border-slate-700 focus:border-amber-500 focus:outline-none"
+   947→          >
+   948→            {categories.map(c => <option key={c} value={c}>{c === 'all' ? 'All Categories' : c}</option>)}
+   949→          </select>
+   950→        </div>
+   951→
+   952→        {/* Problem List */}
+   953→        <div className="overflow-y-auto flex-1 p-2" style={{ maxHeight: 'calc(100vh - 16rem)' }}>
+   954→          {filteredProblems.map(p => (
+   955→            <button
+   956→              key={p.id}
+   957→              onClick={() => { setCurrentProblem(p.id); setSidebarOpen(false); }}
+   958→              className={cn(
+   959→                "w-full flex items-center gap-2 px-3 py-2 rounded-md text-xs transition-all text-left mb-0.5",
+   960→                currentProblemId === p.id ? "bg-amber-900/30 text-amber-300 border border-amber-800" : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
+   961→              )}
+   962→            >
+   963→              {isProblemCompleted(p.id) ? <CheckCircle className="w-3.5 h-3.5 text-emerald-500 flex-shrink-0" /> : <div className="w-3.5 h-3.5 rounded-full border border-slate-600 flex-shrink-0" />}
+   964→              <span className="flex-1 truncate">{p.id}. {p.title}</span>
+   965→              <span className={cn("text-[10px] px-1.5 py-0.5 rounded border flex-shrink-0", difficultyColor(p.difficulty))}>{p.difficulty}</span>
+   966→            </button>
+   967→          ))}
+   968→          {filteredProblems.length === 0 && <div className="text-slate-500 text-xs text-center py-4">No problems match your filters</div>}
+   969→        </div>
+   970→      </div>
+   971→
+   972→      {sidebarOpen && <div className="fixed inset-0 z-30 bg-black/50 lg:hidden" onClick={() => setSidebarOpen(false)} />}
+   973→
+   974→      {/* Main Content */}
+   975→      <div className="flex-1 overflow-y-auto">
+   976→        {currentProblem ? (
+   977→          <>
+   978→            <div className="sticky top-0 z-10 bg-slate-950/90 backdrop-blur-sm border-b border-slate-800 px-4 py-2.5 flex items-center gap-3">
+   979→              <button onClick={() => setSidebarOpen(true)} className="lg:hidden text-slate-400 hover:text-white"><Menu className="w-5 h-5" /></button>
+   980→              <span className={cn("text-[10px] px-2 py-1 rounded border font-semibold", difficultyColor(currentProblem.difficulty))}>{currentProblem.difficulty}</span>
+   981→              <span className="text-xs text-slate-500 bg-slate-800 px-2 py-1 rounded">{currentProblem.category}</span>
+   982→              <h2 className="text-sm font-semibold text-slate-200 flex-1 truncate">{currentProblem.id}. {currentProblem.title}</h2>
+   983→              {testResults && (
+   984→                <span className={cn(
+   985→                  "text-xs font-semibold flex items-center gap-1",
+   986→                  testResults.every(r => r.passed) ? "text-emerald-400" : "text-red-400"
+   987→                )}>
+   988→                  {testResults.every(r => r.passed) ? <><CheckCircle className="w-3.5 h-3.5" /> All Passed</> : <><XCircle className="w-3.5 h-3.5" /> {testResults.filter(r => r.passed).length}/{testResults.length}</>}
+   989→                </span>
+   990→              )}
+   991→              {solved && !testResults && <span className="text-emerald-400 text-xs font-semibold flex items-center gap-1"><CheckCircle className="w-3.5 h-3.5" /> Solved!</span>}
+   992→            </div>
+   993→
+   994→            <div className="p-4 max-w-4xl mx-auto space-y-4 animate-fade-in">
+   995→              {/* Problem Description */}
+   996→              <div className="bg-slate-900 rounded-xl p-5 border border-slate-700">
+   997→                <p className="text-slate-200 text-sm leading-relaxed">{currentProblem.description}</p>
+   998→                <div className="mt-3 flex items-center gap-2 text-xs text-slate-500">
+   999→                  <Flask className="w-3.5 h-3.5" />
+  1000→                  <span>{currentProblem.testCases.length} test cases</span>
+  1001→                </div>
+  1002→              </div>
+  1003→
+  1004→              {/* SQL Editor */}
+  1005→              <SqlEditor
+  1006→                initialCode={`-- Write your solution here\n`}
+  1007→                onRun={handleQueryResult}
+  1008→                schema={currentProblem.schema}
+  1009→                sqlReady={sqlReady}
+  1010→                SQL={SQL}
+  1011→                runLabel="Run & Test"
+  1012→              />
+  1013→
+  1014→              {/* Query Result & Test Cases */}
+  1015→              {(queryResult || testResults) && (
+  1016→                <>
+  1017→                  {/* Tab bar */}
+  1018→                  <div className="flex gap-1 border-b border-slate-800">
+  1019→                    <button
+  1020→                      onClick={() => setActiveResultTab('tests')}
+  1021→                      className={cn(
+  1022→                        "flex items-center gap-1.5 px-3 py-2 text-xs font-medium border-b-2 transition-all",
+  1023→                        activeResultTab === 'tests' ? "border-amber-500 text-amber-400" : "border-transparent text-slate-500 hover:text-slate-300"
+  1024→                      )}
+  1025→                    >
+  1026→                      <Flask className="w-3.5 h-3.5" /> Test Results
+  1027→                      {testResults && (
+  1028→                        <span className={cn(
+  1029→                          "px-1.5 py-0.5 rounded text-[10px] font-bold",
+  1030→                          testResults.every(r => r.passed) ? "bg-emerald-900/30 text-emerald-400" : "bg-red-900/30 text-red-400"
+  1031→                        )}>
+  1032→                          {testResults.filter(r => r.passed).length}/{testResults.length}
+  1033→                        </span>
+  1034→                      )}
+  1035→                    </button>
+  1036→                    <button
+  1037→                      onClick={() => setActiveResultTab('output')}
+  1038→                      className={cn(
+  1039→                        "flex items-center gap-1.5 px-3 py-2 text-xs font-medium border-b-2 transition-all",
+  1040→                        activeResultTab === 'output' ? "border-emerald-500 text-emerald-400" : "border-transparent text-slate-500 hover:text-slate-300"
+  1041→                      )}
+  1042→                    >
+  1043→                      <Terminal className="w-3.5 h-3.5" /> Console Output
+  1044→                    </button>
+  1045→                  </div>
+  1046→
+  1047→                  {/* Test Results Tab */}
+  1048→                  {activeResultTab === 'tests' && testResults && (
+  1049→                    <TestCaseResults
+  1050→                      results={testResults}
+  1051→                      onShowExpected={(result) => setShowDiffModal(result)}
+  1052→                    />
+  1053→                  )}
+  1054→
+  1055→                  {activeResultTab === 'tests' && !testResults && queryResult && (
+  1056→                    <div className="bg-slate-900 rounded-xl border border-slate-700 p-4 text-center">
+  1057→                      <p className="text-slate-400 text-sm">Run your query to see test results</p>
+  1058→                    </div>
+  1059→                  )}
+  1060→
+  1061→                  {/* Console Output Tab */}
+  1062→                  {activeResultTab === 'output' && queryResult && (
+  1063→                    <div className="bg-slate-900 rounded-xl border border-slate-700 overflow-hidden">
+  1064→                      <div className="px-4 py-2 border-b border-slate-700 flex items-center gap-2">
+  1065→                        {queryResult.error ? (
+  1066→                          <span className="text-red-400 text-xs font-semibold">Error</span>
+  1067→                        ) : (
+  1068→                          <span className="text-emerald-400 text-xs font-semibold">Result ({queryResult.rows.length} rows)</span>
+  1069→                        )}
+  1070→                      </div>
+  1071→                      {queryResult.error ? (
+  1072→                        <div className="p-4 text-red-400 text-sm font-mono">{queryResult.error}</div>
+  1073→                      ) : (
+  1074→                        <ResultTable columns={queryResult.columns} rows={queryResult.rows} />
+  1075→                      )}
+  1076→                    </div>
+  1077→                  )}
+  1078→                </>
+  1079→              )}
+  1080→
+  1081→              {/* Hint & Solution */}
+  1082→              <div className="flex gap-2">
+  1083→                <button
+  1084→                  onClick={() => setShowHint(!showHint)}
+  1085→                  className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium bg-amber-900/20 text-amber-400 border border-amber-800 hover:bg-amber-900/30 transition-colors"
+  1086→                >
+  1087→                  <Lightbulb className="w-3.5 h-3.5" /> {showHint ? 'Hide Hint' : 'Show Hint'}
+  1088→                </button>
+  1089→                <button
+  1090→                  onClick={() => setShowSolution(!showSolution)}
+  1091→                  className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium bg-slate-800 text-slate-400 border border-slate-700 hover:text-slate-200 transition-colors"
+  1092→                >
+  1093→                  {showSolution ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />} {showSolution ? 'Hide Solution' : 'Show Solution'}
+  1094→                </button>
+  1095→              </div>
+  1096→
+  1097→              {showHint && (
+  1098→                <div className="bg-amber-900/10 rounded-xl p-4 border border-amber-800/30 animate-fade-in">
+  1099→                  <p className="text-amber-300 text-sm"><Lightbulb className="w-4 h-4 inline mr-2" />{currentProblem.hint}</p>
+  1100→                </div>
+  1101→              )}
+  1102→
+  1103→              {showSolution && (
+  1104→                <div className="bg-slate-900 rounded-xl p-4 border border-emerald-900/30 animate-fade-in">
+  1105→                  <h4 className="text-emerald-400 text-xs font-semibold mb-2">Solution</h4>
+  1106→                  <pre className="text-emerald-300/90 text-sm overflow-x-auto">{currentProblem.solution}</pre>
+  1107→                </div>
+  1108→              )}
+  1109→            </div>
+  1110→          </>
+  1111→        ) : (
+  1112→          <div className="flex flex-col items-center justify-center h-full text-center px-4">
+  1113→            <Trophy className="w-16 h-16 text-amber-500/30 mb-4" />
+  1114→            <h2 className="text-xl font-bold text-slate-300 mb-2">Ready to Practice?</h2>
+  1115→            <p className="text-slate-500 text-sm mb-6 max-w-md">Select a problem from the sidebar to start solving. Filter by difficulty and category to find problems that match your skill level.</p>
+  1116→            <button onClick={() => setSidebarOpen(true)} className="lg:hidden px-4 py-2 rounded-lg bg-amber-600 text-white text-sm font-medium hover:bg-amber-500 transition-colors">
+  1117→              Browse Problems
+  1118→            </button>
+  1119→          </div>
+  1120→        )}
+  1121→      </div>
+  1122→
+  1123→      {/* Diff Modal */}
+  1124→      {showDiffModal && (
+  1125→        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60" onClick={() => setShowDiffModal(null)}>
+  1126→          <div className="bg-slate-900 rounded-xl border border-slate-700 max-w-lg w-full max-h-[80vh] overflow-auto" onClick={e => e.stopPropagation()}>
+  1127→            <div className="px-4 py-3 border-b border-slate-700 flex items-center justify-between">
+  1128→              <h3 className="text-sm font-semibold text-slate-200">Test Case Detail: {showDiffModal.description}</h3>
+  1129→              <button onClick={() => setShowDiffModal(null)} className="text-slate-400 hover:text-white"><X className="w-4 h-4" /></button>
+  1130→            </div>
+  1131→            <div className="p-4 space-y-4">
+  1132→              <div>
+  1133→                <h4 className="text-xs font-semibold text-emerald-400 mb-2 uppercase tracking-wider">Expected</h4>
+  1134→                <pre className="bg-slate-950 rounded-lg p-3 text-xs text-emerald-300 font-mono overflow-x-auto">
+  1135→                  {typeof showDiffModal.expected === 'object'
+  1136→                    ? JSON.stringify(showDiffModal.expected, null, 2)
+  1137→                    : String(showDiffModal.expected)}
+  1138→                </pre>
+  1139→              </div>
+  1140→              <div>
+  1141→                <h4 className="text-xs font-semibold text-red-400 mb-2 uppercase tracking-wider">Your Output</h4>
+  1142→                <pre className="bg-slate-950 rounded-lg p-3 text-xs text-red-300 font-mono overflow-x-auto">
+  1143→                  {typeof showDiffModal.actual === 'object'
+  1144→                    ? JSON.stringify(showDiffModal.actual, null, 2)
+  1145→                    : String(showDiffModal.actual)}
+  1146→                </pre>
+  1147→              </div>
+  1148→              <div className="bg-amber-900/10 rounded-lg p-3 border border-amber-800/30">
+  1149→                <p className="text-amber-300 text-xs">{showDiffModal.message}</p>
+  1150→              </div>
+  1151→            </div>
+  1152→          </div>
+  1153→        </div>
+  1154→      )}
+  1155→    </div>
+  1156→  );
+  1157→}
+  1158→
+  1159→// ─── Main App ──────────────────────────────────────────────────
+  1160→export default function Home() {
+  1161→  const [SQL, setSQL] = useState<any>(null);
+  1162→  const [sqlReady, setSqlReady] = useState(false);
+  1163→  const [sqlLoading, setSqlLoading] = useState(true);
+  1164→  const { mode, setMode } = useLearningStore();
+  1165→
+  1166→  useEffect(() => {
+  1167→    initSqlJs()
+  1168→      .then((module) => { setSQL(module); setSqlReady(true); setSqlLoading(false); })
+  1169→      .catch((err) => { console.error('Failed to load SQL.js:', err); setSqlLoading(false); });
+  1170→  }, []);
+  1171→
+  1172→  return (
+  1173→    <div className="min-h-screen bg-slate-950 text-slate-100">
+  1174→      {/* Header */}
+  1175→      <header className="sticky top-0 z-50 bg-slate-950/95 backdrop-blur-sm border-b border-slate-800">
+  1176→        <div className="flex items-center justify-between px-4 h-14">
+  1177→          <div className="flex items-center gap-3">
+  1178→            <span className="text-2xl">🗃️</span>
+  1179→            <div>
+  1180→              <h1 className="text-sm font-bold text-white leading-none">SQL Mastery</h1>
+  1181→              <p className="text-[10px] text-slate-500 leading-none mt-0.5">Zero to Placement Ready</p>
+  1182→            </div>
+  1183→          </div>
+  1184→
+  1185→          {/* Mode Toggle */}
+  1186→          <div className="flex items-center bg-slate-900 rounded-lg p-0.5 border border-slate-800">
+  1187→            <button
+  1188→              onClick={() => setMode('learn')}
+  1189→              className={cn(
+  1190→                "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all",
+  1191→                mode === 'learn' ? "bg-emerald-600 text-white shadow-lg" : "text-slate-400 hover:text-slate-200"
+  1192→              )}
+  1193→            >
+  1194→              <BookOpen className="w-3.5 h-3.5" /> Learn
+  1195→            </button>
+  1196→            <button
+  1197→              onClick={() => setMode('practice')}
+  1198→              className={cn(
+  1199→                "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all",
+  1200→                mode === 'practice' ? "bg-amber-600 text-white shadow-lg" : "text-slate-400 hover:text-slate-200"
+  1201→              )}
+  1202→            >
+  1203→              <Code className="w-3.5 h-3.5" /> Practice
+  1204→            </button>
+  1205→          </div>
+  1206→
+  1207→          {/* SQL Status */}
+  1208→          <div className="flex items-center gap-2">
+  1209→            {sqlLoading && <span className="text-xs text-slate-500 animate-pulse">Loading SQL Engine...</span>}
+  1210→            {sqlReady && <span className="text-xs text-emerald-500 flex items-center gap-1"><CheckCircle className="w-3 h-3" /> SQL Ready</span>}
+  1211→            {!sqlLoading && !sqlReady && <span className="text-xs text-red-400">SQL Engine Failed</span>}
+  1212→          </div>
+  1213→        </div>
+  1214→      </header>
+  1215→
+  1216→      {/* Content */}
+  1217→      {mode === 'learn' ? (
+  1218→        <LearnMode SQL={SQL} sqlReady={sqlReady} />
+  1219→      ) : (
+  1220→        <PracticeMode SQL={SQL} sqlReady={sqlReady} />
+  1221→      )}
+  1222→    </div>
+  1223→  );
+  1224→}
+  1225→
