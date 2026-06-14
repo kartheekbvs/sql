@@ -18,7 +18,12 @@ async function getSqlJs(): Promise<any> {
     try {
       const initSqlJs = (await import('sql.js')).default;
       const SQL = await initSqlJs({
-        locateFile: (file: string) => `/${file}`,
+        locateFile: (file: string) => {
+          // Dynamic basePath: use window location to detect GitHub Pages vs local dev
+          const path = window.location.pathname;
+          const basePath = path.startsWith('/sql') ? '/sql' : '';
+          return `${basePath}/${file}`;
+        },
       });
       sqlJsModule = SQL;
       return SQL;
