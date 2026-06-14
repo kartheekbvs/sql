@@ -9,6 +9,14 @@ import { cn } from '@/lib/utils';
 // ─── Client-Side SQL.js Engine ─────────────────────────────────
 let sqlJsModule: any = null;
 let sqlJsLoading: Promise<any> | null = null;
+let sqlJsError: string | null = null;
+
+function getWasmUrl(): string {
+  if (typeof window === 'undefined') return '/sql-wasm.wasm';
+  const path = window.location.pathname;
+  const basePath = path.startsWith('/sql') ? '/sql' : '';
+  return `${basePath}/sql-wasm.wasm`;
+}
 
 async function getSqlJs(): Promise<any> {
   if (sqlJsModule) return sqlJsModule;
@@ -17,18 +25,30 @@ async function getSqlJs(): Promise<any> {
   sqlJsLoading = (async () => {
     try {
       const initSqlJs = (await import('sql.js')).default;
-      const SQL = await initSqlJs({
-        locateFile: (file: string) => {
-          // Dynamic basePath: use window location to detect GitHub Pages vs local dev
-          const path = window.location.pathname;
-          const basePath = path.startsWith('/sql') ? '/sql' : '';
-          return `${basePath}/${file}`;
-        },
-      });
+      const wasmUrl = getWasmUrl();
+      
+      // Try fetching WASM as binary first (most reliable for static hosting)
+      let SQL;
+      try {
+        const response = await fetch(wasmUrl);
+        if (!response.ok) throw new Error(`WASM fetch failed: ${response.status}`);
+        const wasmBinary = await response.arrayBuffer();
+        SQL = await initSqlJs({ wasmBinary });
+      } catch (wasmErr) {
+        // Fallback: let sql.js locate the file itself
+        console.warn('WASM binary fetch failed, trying locateFile fallback:', wasmErr);
+        SQL = await initSqlJs({
+          locateFile: (file: string) => getWasmUrl(),
+        });
+      }
+      
       sqlJsModule = SQL;
+      sqlJsError = null;
       return SQL;
-    } catch (e) {
+    } catch (e: any) {
       sqlJsLoading = null;
+      sqlJsError = e.message;
+      console.error('Failed to load SQL.js:', e);
       throw e;
     }
   })();
@@ -494,9 +514,14 @@ function SqlEditor({ initialCode, onRun, schema, runLabel }: { initialCode: stri
 
   const handleRun = useCallback(async () => {
     setRunning(true);
-    const result = await executeQuery(schema, code);
-    onRun(result, code);
-    setRunning(false);
+    try {
+      const result = await executeQuery(schema, code);
+      onRun(result, code);
+    } catch (e: any) {
+      onRun({ columns: [], rows: [], error: `Execution failed: ${e.message}` }, code);
+    } finally {
+      setRunning(false);
+    }
   }, [code, schema, onRun]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -1132,6 +1157,14 @@ function PracticeMode() {
                 runLabel="Run & Test"
               />
 
+              {/* Running indicator */}
+              {isRunning && (
+                <div className="bg-amber-900/10 rounded-xl p-4 border border-amber-800/30 flex items-center gap-3 animate-fade-in">
+                  <svg className="w-4 h-4 animate-spin text-amber-400" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="30 70" /></svg>
+                  <span className="text-amber-300 text-sm">Running test cases...</span>
+                </div>
+              )}
+
               {/* Query Result & Test Cases */}
               {(queryResult || testResults) && (
                 <>
@@ -1281,11 +1314,16 @@ function PracticeMode() {
 function SqlEngineStatus() {
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
 
-  useEffect(() => {
+  const loadEngine = useCallback(() => {
+    setStatus('loading');
+    sqlJsModule = null;
+    sqlJsLoading = null;
     getSqlJs()
       .then(() => setStatus('ready'))
-      .catch(() => setStatus('error'));
+      .catch((e) => { console.error('SQL Engine error:', e); setStatus('error'); });
   }, []);
+
+  useEffect(() => { loadEngine(); }, [loadEngine]);
 
   return (
     <div className="flex items-center gap-2">
@@ -1299,7 +1337,9 @@ function SqlEngineStatus() {
         <span className="text-xs text-emerald-500 flex items-center gap-1"><CheckCircle className="w-3 h-3" /> SQL Engine Ready</span>
       )}
       {status === 'error' && (
-        <span className="text-xs text-red-400 flex items-center gap-1"><XCircle className="w-3 h-3" /> SQL Engine Failed</span>
+        <button onClick={loadEngine} className="text-xs text-red-400 flex items-center gap-1 hover:text-red-300 transition-colors">
+          <XCircle className="w-3 h-3" /> SQL Engine Failed (click to retry)
+        </button>
       )}
     </div>
   );
