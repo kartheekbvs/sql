@@ -27,23 +27,25 @@ async function getSqlJs(): Promise<any> {
       const initSqlJs = (await import('sql.js')).default;
       const wasmUrl = getWasmUrl();
       
-      // Try fetching WASM as binary first (most reliable for static hosting)
+      // Approach 1: Fetch WASM binary and pass it directly (most reliable)
       let SQL;
       try {
         const response = await fetch(wasmUrl);
         if (!response.ok) throw new Error(`WASM fetch failed: ${response.status}`);
         const wasmBinary = await response.arrayBuffer();
         SQL = await initSqlJs({ wasmBinary });
-      } catch (wasmErr) {
-        // Fallback: let sql.js locate the file itself
-        console.warn('WASM binary fetch failed, trying locateFile fallback:', wasmErr);
+      } catch (wasmErr: any) {
+        // Approach 2: Let sql.js find the file via locateFile
+        console.warn('WASM binary fetch failed, trying locateFile:', wasmErr?.message);
+        const basePath = typeof window !== 'undefined' && window.location.pathname.startsWith('/sql') ? '/sql' : '';
         SQL = await initSqlJs({
-          locateFile: (file: string) => getWasmUrl(),
+          locateFile: (file: string) => `${basePath}/${file}`,
         });
       }
       
       sqlJsModule = SQL;
       sqlJsError = null;
+      console.log('SQL.js engine loaded successfully');
       return SQL;
     } catch (e: any) {
       sqlJsLoading = null;
