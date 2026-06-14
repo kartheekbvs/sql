@@ -32,3 +32,31 @@ Stage Summary:
 - No modifications to existing application code
 - Test infrastructure: jest.config.js, tests/test-engine.ts, tests/sql-mastery.test.ts, tests/run-tests.ts
 - Ready to push to GitHub
+
+---
+Task ID: 1
+Agent: Main Agent
+Task: Fix SQL Engine Failed error on GitHub Pages + Add schema display + Static export
+
+Work Log:
+- Identified root cause: Server-side API route (/api/sql) doesn't work on GitHub Pages (static-only hosting)
+- Replaced server-side SQL execution with client-side sql.js WASM execution in the browser
+- Added getSqlJs() singleton loader that dynamically imports sql.js with locateFile pointing to /public/
+- Added executeQueryClient() that creates in-memory SQLite databases in the browser
+- Added SqlEngineStatus component with Loading/Ready/Failed states in the header
+- Added SchemaDisplay component showing table names, columns, and sample data rows
+- Added parseSchemaTables() function to extract CREATE TABLE and INSERT INTO metadata from schema SQL
+- Integrated SchemaDisplay into PracticeMode with collapsible <details> element
+- Changed next.config.ts output from "standalone" to "export" for static site generation
+- Added images.unoptimized: true for static export compatibility
+- Removed /api/sql route (no longer needed for static hosting)
+- Added .nojekyll file for GitHub Pages
+- Created GitHub Actions workflow (.github/workflows/deploy.yml) for automated deployment
+- Switched GitHub Pages build_type from "legacy" to "workflow" via API
+- Successfully built and deployed to GitHub Pages
+
+Stage Summary:
+- SQL Engine now runs entirely in the browser via sql.js WASM (no server needed)
+- Schema display shows table structure and sample data for each problem
+- GitHub Pages deployment automated via GitHub Actions
+- Site live at https://kartheekbvs.github.io/sql/

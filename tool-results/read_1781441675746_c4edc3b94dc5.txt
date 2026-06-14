@@ -1,0 +1,1182 @@
+     1→     1→'use client';
+     2→     2→
+     3→     3→import { useState, useEffect, useRef, useCallback } from 'react';
+     4→     4→import { phases, Phase, Topic } from '@/lib/curriculum';
+     5→     5→import { problems, Problem, TestCase } from '@/lib/problems';
+     6→     6→import { useLearningStore } from '@/lib/store';
+     7→     7→import { cn } from '@/lib/utils';
+     8→     8→
+     9→     9→// ─── SQL Execution Engine (Server-side via API) ────────────────
+    10→    10→async function executeQueryApi(schema: string, query: string): Promise<{ columns: string[]; rows: any[][]; error: string | null }> {
+    11→    11→  try {
+    12→    12→    const res = await fetch('/api/sql', {
+    13→    13→      method: 'POST',
+    14→    14→      headers: { 'Content-Type': 'application/json' },
+    15→    15→      body: JSON.stringify({ query, schema }),
+    16→    16→    });
+    17→    17→    const data = await res.json();
+    18→    18→    return { columns: data.columns || [], rows: data.rows || [], error: data.error || null };
+    19→    19→  } catch (e: any) {
+    20→    20→    return { columns: [], rows: [], error: e.message };
+    21→    21→  }
+    22→    22→}
+    23→    23→
+    24→    24→// ─── Test Case Validation Engine ───────────────────────────────
+    25→    25→export interface TestCaseResult {
+    26→    26→  id: string;
+    27→    27→  description: string;
+    28→    28→  type: string;
+    29→    29→  passed: boolean;
+    30→    30→  message: string;
+    31→    31→  actual?: any;
+    32→    32→  expected?: any;
+    33→    33→}
+    34→    34→
+    35→    35→function normalizeVal(v: any): string {
+    36→    36→  if (v === null || v === undefined) return 'NULL';
+    37→    37→  if (typeof v === 'number') return String(v);
+    38→    38→  return String(v).trim();
+    39→    39→}
+    40→    40→
+    41→    41→function normalizeRow(row: any[]): string[] {
+    42→    42→  return row.map(normalizeVal);
+    43→    43→}
+    44→    44→
+    45→    45→function sortRowsForCompare(rows: any[][]): string[][] {
+    46→    46→  return rows.map(normalizeRow).sort((a, b) => {
+    47→    47→    for (let i = 0; i < Math.min(a.length, b.length); i++) {
+    48→    48→      const cmp = a[i].localeCompare(b[i]);
+    49→    49→      if (cmp !== 0) return cmp;
+    50→    50→    }
+    51→    51→    return 0;
+    52→    52→  });
+    53→    53→}
+    54→    54→
+    55→    55→function rowsEqual(a: any[][], b: any[][]): boolean {
+    56→    56→  const sa = sortRowsForCompare(a);
+    57→    57→  const sb = sortRowsForCompare(b);
+    58→    58→  if (sa.length !== sb.length) return false;
+    59→    59→  for (let i = 0; i < sa.length; i++) {
+    60→    60→    if (sa[i].length !== sb[i].length) return false;
+    61→    61→    for (let j = 0; j < sa[i].length; j++) {
+    62→    62→      if (sa[i][j] !== sb[i][j]) return false;
+    63→    63→    }
+    64→    64→  }
+    65→    65→  return true;
+    66→    66→}
+    67→    67→
+    68→    68→function columnsMatch(expected: string[], actual: string[]): boolean {
+    69→    69→  const e = expected.map(c => c.toLowerCase().trim());
+    70→    70→  const a = actual.map(c => c.toLowerCase().trim());
+    71→    71→  if (e.length !== a.length) return false;
+    72→    72→  return e.every(col => a.includes(col));
+    73→    73→}
+    74→    74→
+    75→    75→function columnsExactOrder(expected: string[], actual: string[]): boolean {
+    76→    76→  const e = expected.map(c => c.toLowerCase().trim());
+    77→    77→  const a = actual.map(c => c.toLowerCase().trim());
+    78→    78→  if (e.length !== a.length) return false;
+    79→    79→  return e.every((col, i) => col === a[i]);
+    80→    80→}
+    81→    81→
+    82→    82→async function runTestCases(problem: Problem, userQuery: string): Promise<TestCaseResult[]> {
+    83→    83→  const results: TestCaseResult[] = [];
+    84→    84→
+    85→    85→  // Run the solution query to get expected result
+    86→    86→  const solutionResult = await executeQueryApi(problem.schema, problem.solution);
+    87→    87→  if (solutionResult.error) {
+    88→    88→    return problem.testCases.map(tc => ({
+    89→    89→      id: tc.id,
+    90→    90→      description: tc.description,
+    91→    91→      type: tc.type,
+    92→    92→      passed: false,
+    93→    93→      message: `Solution query error: ${solutionResult.error}`,
+    94→    94→    }));
+    95→    95→  }
+    96→    96→
+    97→    97→  // Run the user's query
+    98→    98→  const userResult = await executeQueryApi(problem.schema, userQuery);
+    99→    99→  if (userResult.error) {
+   100→   100→    return problem.testCases.map(tc => ({
+   101→   101→      id: tc.id,
+   102→   102→      description: tc.description,
+   103→   103→      type: tc.type,
+   104→   104→      passed: false,
+   105→   105→      message: `Query Error: ${userResult.error}`,
+   106→   106→    }));
+   107→   107→  }
+   108→   108→
+   109→   109→  for (const tc of problem.testCases) {
+   110→   110→    const expectedCols = tc.expectedColumns || solutionResult.columns;
+   111→   111→    const expectedRowCount = tc.expectedRowCount ?? solutionResult.rows.length;
+   112→   112→
+   113→   113→    switch (tc.type) {
+   114→   114→      case 'column_match': {
+   115→   115→        const match = columnsMatch(expectedCols, userResult.columns);
+   116→   116→        results.push({
+   117→   117→          id: tc.id,
+   118→   118→          description: tc.description,
+   119→   119→          type: tc.type,
+   120→   120→          passed: match,
+   121→   121→          message: match
+   122→   122→            ? `Column names match (${userResult.columns.join(', ')})`
+   123→   123→            : `Column mismatch. Expected: [${expectedCols.join(', ')}], Got: [${userResult.columns.join(', ')}]`,
+   124→   124→          actual: userResult.columns,
+   125→   125→          expected: expectedCols,
+   126→   126→        });
+   127→   127→        break;
+   128→   128→      }
+   129→   129→
+   130→   130→      case 'column_order': {
+   131→   131→        const match = columnsExactOrder(expectedCols, userResult.columns);
+   132→   132→        results.push({
+   133→   133→          id: tc.id,
+   134→   134→          description: tc.description,
+   135→   135→          type: tc.type,
+   136→   136→          passed: match,
+   137→   137→          message: match
+   138→   138→            ? `Column order matches`
+   139→   139→            : `Column order mismatch. Expected: [${expectedCols.join(', ')}], Got: [${userResult.columns.join(', ')}]`,
+   140→   140→          actual: userResult.columns,
+   141→   141→          expected: expectedCols,
+   142→   142→        });
+   143→   143→        break;
+   144→   144→      }
+   145→   145→
+   146→   146→      case 'row_count': {
+   147→   147→        const match = userResult.rows.length === expectedRowCount;
+   148→   148→        results.push({
+   149→   149→          id: tc.id,
+   150→   150→          description: tc.description,
+   151→   151→          type: tc.type,
+   152→   152→          passed: match,
+   153→   153→          message: match
+   154→   154→            ? `Row count matches: ${userResult.rows.length}`
+   155→   155→            : `Row count mismatch. Expected: ${expectedRowCount}, Got: ${userResult.rows.length}`,
+   156→   156→          actual: userResult.rows.length,
+   157→   157→          expected: expectedRowCount,
+   158→   158→        });
+   159→   159→        break;
+   160→   160→      }
+   161→   161→
+   162→   162→      case 'exact_match': {
+   163→   163→        const colsOk = columnsExactOrder(solutionResult.columns, userResult.columns);
+   164→   164→        const rowsOk = rowsEqual(solutionResult.rows, userResult.rows);
+   165→   165→        const match = colsOk && rowsOk;
+   166→   166→        let msg = '';
+   167→   167→        if (match) {
+   168→   168→          msg = `Exact match! ${userResult.rows.length} rows, ${userResult.columns.length} columns`;
+   169→   169→        } else if (!colsOk) {
+   170→   170→          msg = `Column mismatch. Expected: [${solutionResult.columns.join(', ')}], Got: [${userResult.columns.join(', ')}]`;
+   171→   171→        } else {
+   172→   172→          msg = `Row data mismatch. Expected ${solutionResult.rows.length} rows, Got ${userResult.rows.length} rows`;
+   173→   173→          // Find first differing row
+   174→   174→          const sSorted = sortRowsForCompare(solutionResult.rows);
+   175→   175→          const uSorted = sortRowsForCompare(userResult.rows);
+   176→   176→          const maxCheck = Math.min(3, Math.max(sSorted.length, uSorted.length));
+   177→   177→          for (let i = 0; i < maxCheck; i++) {
+   178→   178→            if (!sSorted[i] || !uSorted[i]) {
+   179→   179→              msg += ` | Row ${i + 1}: ${sSorted[i] ? sSorted[i].join(',') : 'missing'} vs ${uSorted[i] ? uSorted[i].join(',') : 'extra'}`;
+   180→   180→            } else if (sSorted[i].join(',') !== uSorted[i].join(',')) {
+   181→   181→              msg += ` | Row ${i + 1}: expected [${sSorted[i].join(', ')}], got [${uSorted[i].join(', ')}]`;
+   182→   182→              break;
+   183→   183→            }
+   184→   184→          }
+   185→   185→        }
+   186→   186→        results.push({
+   187→   187→          id: tc.id,
+   188→   188→          description: tc.description,
+   189→   189→          type: tc.type,
+   190→   190→          passed: match,
+   191→   191→          message: msg,
+   192→   192→          actual: { columns: userResult.columns, rowCount: userResult.rows.length },
+   193→   193→          expected: { columns: solutionResult.columns, rowCount: solutionResult.rows.length },
+   194→   194→        });
+   195→   195→        break;
+   196→   196→      }
+   197→   197→
+   198→   198→      case 'unordered_match': {
+   199→   199→        const colsOk = columnsMatch(solutionResult.columns, userResult.columns);
+   200→   200→        const rowsOk = rowsEqual(solutionResult.rows, userResult.rows);
+   201→   201→        const match = colsOk && rowsOk;
+   202→   202→        results.push({
+   203→   203→          id: tc.id,
+   204→   204→          description: tc.description,
+   205→   205→          type: tc.type,
+   206→   206→          passed: match,
+   207→   207→          message: match
+   208→   208→            ? `Results match (order-independent)! ${userResult.rows.length} rows`
+   209→   209→            : !colsOk
+   210→   210→              ? `Column mismatch. Expected: [${solutionResult.columns.join(', ')}], Got: [${userResult.columns.join(', ')}]`
+   211→   211→              : `Row data mismatch despite correct columns. Expected ${solutionResult.rows.length} rows, Got ${userResult.rows.length}`,
+   212→   212→          actual: { columns: userResult.columns, rowCount: userResult.rows.length },
+   213→   213→          expected: { columns: solutionResult.columns, rowCount: solutionResult.rows.length },
+   214→   214→        });
+   215→   215→        break;
+   216→   216→      }
+   217→   217→
+   218→   218→      case 'not_empty': {
+   219→   219→        const match = userResult.rows.length > 0 && userResult.columns.length > 0;
+   220→   220→        results.push({
+   221→   221→          id: tc.id,
+   222→   222→          description: tc.description,
+   223→   223→          type: tc.type,
+   224→   224→          passed: match,
+   225→   225→          message: match
+   226→   226→            ? `Query returns ${userResult.rows.length} rows`
+   227→   227→            : 'Query returned no results',
+   228→   228→          actual: userResult.rows.length,
+   229→   229→          expected: '> 0',
+   230→   230→        });
+   231→   231→        break;
+   232→   232→      }
+   233→   233→
+   234→   234→      case 'sorted_order': {
+   235→   235→        const sortColIdx = tc.sortColumn ?? 0;
+   236→   236→        const sortDir = tc.sortDirection ?? 'ASC';
+   237→   237→        let isSorted = true;
+   238→   238→        if (userResult.rows.length > 1) {
+   239→   239→          for (let i = 1; i < userResult.rows.length; i++) {
+   240→   240→            const prev = normalizeVal(userResult.rows[i - 1][sortColIdx]);
+   241→   241→            const curr = normalizeVal(userResult.rows[i][sortColIdx]);
+   242→   242→            if (sortDir === 'ASC' && prev.localeCompare(curr) > 0) { isSorted = false; break; }
+   243→   243→            if (sortDir === 'DESC' && prev.localeCompare(curr) < 0) { isSorted = false; break; }
+   244→   244→          }
+   245→   245→        }
+   246→   246→        const colName = userResult.columns[sortColIdx] || `column ${sortColIdx}`;
+   247→   247→        results.push({
+   248→   248→          id: tc.id,
+   249→   249→          description: tc.description,
+   250→   250→          type: tc.type,
+   251→   251→          passed: isSorted,
+   252→   252→          message: isSorted
+   253→   253→            ? `Results sorted by ${colName} (${sortDir})`
+   254→   254→            : `Results NOT sorted by ${colName} (${sortDir})`,
+   255→   255→          actual: 'See query output',
+   256→   256→          expected: `Sorted ${sortDir} by ${colName}`,
+   257→   257→        });
+   258→   258→        break;
+   259→   259→      }
+   260→   260→
+   261→   261→      default: {
+   262→   262→        results.push({
+   263→   263→          id: tc.id,
+   264→   264→          description: tc.description,
+   265→   265→          type: tc.type,
+   266→   266→          passed: false,
+   267→   267→          message: `Unknown test type: ${tc.type}`,
+   268→   268→        });
+   269→   269→      }
+   270→   270→    }
+   271→   271→  }
+   272→   272→
+   273→   273→  return results;
+   274→   274→}
+   275→   275→
+   276→   276→// ─── Icons ─────────────────────────────────────────────────────
+   277→   277→function BookOpen({ className }: { className?: string }) {
+   278→   278→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>;
+   279→   279→}
+   280→   280→function Code({ className }: { className?: string }) {
+   281→   281→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>;
+   282→   282→}
+   283→   283→function CheckCircle({ className }: { className?: string }) {
+   284→   284→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>;
+   285→   285→}
+   286→   286→function XCircle({ className }: { className?: string }) {
+   287→   287→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>;
+   288→   288→}
+   289→   289→function Play({ className }: { className?: string }) {
+   290→   290→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>;
+   291→   291→}
+   292→   292→function ChevronRight({ className }: { className?: string }) {
+   293→   293→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"/></svg>;
+   294→   294→}
+   295→   295→function ChevronDown({ className }: { className?: string }) {
+   296→   296→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9"/></svg>;
+   297→   297→}
+   298→   298→function Menu({ className }: { className?: string }) {
+   299→   299→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>;
+   300→   300→}
+   301→   301→function X({ className }: { className?: string }) {
+   302→   302→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>;
+   303→   303→}
+   304→   304→function Lightbulb({ className }: { className?: string }) {
+   305→   305→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M9 18h6"/><path d="M10 22h4"/><path d="M15.09 14c.18-.98.65-1.74 1.41-2.5A4.65 4.65 0 0 0 18 8 6 6 0 0 0 6 8c0 1 .23 2.23 1.5 3.5A4.61 4.61 0 0 1 8.91 14"/></svg>;
+   306→   306→}
+   307→   307→function AlertTriangle({ className }: { className?: string }) {
+   308→   308→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>;
+   309→   309→}
+   310→   310→function Eye({ className }: { className?: string }) {
+   311→   311→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>;
+   312→   312→}
+   313→   313→function EyeOff({ className }: { className?: string }) {
+   314→   314→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>;
+   315→   315→}
+   316→   316→function Trophy({ className }: { className?: string }) {
+   317→   317→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/><path d="M4 22h16"/><path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"/><path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"/><path d="M18 2H6v7a6 6 0 0 0 12 0V2Z"/></svg>;
+   318→   318→}
+   319→   319→function Flask({ className }: { className?: string }) {
+   320→   320→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M9 3h6"/><path d="M10 9V3h4v6l5 8.5a2 2 0 0 1-1.7 3H6.7a2 2 0 0 1-1.7-3L10 9z"/></svg>;
+   321→   321→}
+   322→   322→function Terminal({ className }: { className?: string }) {
+   323→   323→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>;
+   324→   324→}
+   325→   325→
+   326→   326→// ─── Result Table Component ────────────────────────────────────
+   327→   327→function ResultTable({ columns, rows, maxRows = 50, highlight }: { columns: string[]; rows: any[][]; maxRows?: number; highlight?: boolean }) {
+   328→   328→  if (columns.length === 0 && rows.length === 0) return <div className="text-slate-500 text-sm italic p-3">Query executed successfully (no results to display)</div>;
+   329→   329→  const displayRows = rows.slice(0, maxRows);
+   330→   330→  return (
+   331→   331→    <div className="overflow-x-auto">
+   332→   332→      <table className="sql-table">
+   333→   333→        <thead>
+   334→   334→          <tr>{columns.map((col, i) => <th key={i}>{col}</th>)}</tr>
+   335→   335→        </thead>
+   336→   336→        <tbody>
+   337→   337→          {displayRows.map((row, ri) => (
+   338→   338→            <tr key={ri}>{row.map((cell, ci) => <td key={ci} className={highlight ? 'py-1 text-xs' : ''}>{cell === null ? <span className="text-slate-500 italic">NULL</span> : String(cell)}</td>)}</tr>
+   339→   339→          ))}
+   340→   340→        </tbody>
+   341→   341→      </table>
+   342→   342→      {rows.length > maxRows && <div className="text-xs text-slate-500 mt-1 px-2">Showing {maxRows} of {rows.length} rows</div>}
+   343→   343→    </div>
+   344→   344→  );
+   345→   345→}
+   346→   346→
+   347→   347→// ─── SQL Editor Component ──────────────────────────────────────
+   348→   348→function SqlEditor({ initialCode, onRun, schema, runLabel }: { initialCode: string; onRun: (result: { columns: string[]; rows: any[][]; error: string | null }, query: string) => void; schema: string; runLabel?: string }) {
+   349→   349→  const [code, setCode] = useState(initialCode);
+   350→   350→  const [running, setRunning] = useState(false);
+   351→   351→  const textareaRef = useRef<HTMLTextAreaElement>(null);
+   352→   352→
+   353→   353→  useEffect(() => { setCode(initialCode); }, [initialCode]);
+   354→   354→
+   355→   355→  const handleRun = useCallback(async () => {
+   356→   356→    setRunning(true);
+   357→   357→    const result = await executeQueryApi(schema, code);
+   358→   358→    onRun(result, code);
+   359→   359→    setRunning(false);
+   360→   360→  }, [code, schema, onRun]);
+   361→   361→
+   362→   362→  const handleKeyDown = (e: React.KeyboardEvent) => {
+   363→   363→    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); handleRun(); }
+   364→   364→    if (e.key === 'Tab') {
+   365→   365→      e.preventDefault();
+   366→   366→      const textarea = textareaRef.current;
+   367→   367→      if (textarea) {
+   368→   368→        const start = textarea.selectionStart;
+   369→   369→        const end = textarea.selectionEnd;
+   370→   370→        const newCode = code.substring(0, start) + '  ' + code.substring(end);
+   371→   371→        setCode(newCode);
+   372→   372→        setTimeout(() => { textarea.selectionStart = textarea.selectionEnd = start + 2; }, 0);
+   373→   373→      }
+   374→   374→    }
+   375→   375→  };
+   376→   376→
+   377→   377→  return (
+   378→   378→    <div className="relative">
+   379→   379→      <textarea
+   380→   380→        ref={textareaRef}
+   381→   381→        value={code}
+   382→   382→        onChange={(e) => setCode(e.target.value)}
+   383→   383→        onKeyDown={handleKeyDown}
+   384→   384→        className="w-full bg-slate-950 text-emerald-300 font-mono text-sm p-4 rounded-lg border border-slate-700 focus:border-emerald-500 focus:outline-none resize-y min-h-[120px]"
+   385→   385→        placeholder="-- Write your SQL query here...&#10;SELECT * FROM employees;"
+   386→   386→        spellCheck={false}
+   387→   387→      />
+   388→   388→      <button
+   389→   389→        onClick={handleRun}
+   390→   390→        disabled={running}
+   391→   391→        className={cn(
+   392→   392→          "absolute top-2 right-2 flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-all",
+   393→   393→          !running
+   394→   394→            ? "bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-900/50"
+   395→   395→            : "bg-slate-700 text-slate-400 cursor-not-allowed"
+   396→   396→        )}
+   397→   397→      >
+   398→   398→        <Play className="w-3 h-3" /> {running ? 'Running...' : runLabel || 'Run'} {!running && '(Ctrl+Enter)'}
+   399→   399→      </button>
+   400→   400→    </div>
+   401→   401→  );
+   402→   402→}
+   403→   403→
+   404→   404→// ─── Checkpoint Quiz ───────────────────────────────────────────
+   405→   405→function CheckpointQuiz({ checkpoint, onComplete }: { checkpoint: Topic['checkpoint']; onComplete: () => void }) {
+   406→   406→  const [selected, setSelected] = useState<number | null>(null);
+   407→   407→  const [showResult, setShowResult] = useState(false);
+   408→   408→
+   409→   409→  const handleSelect = (idx: number) => {
+   410→   410→    if (showResult) return;
+   411→   411→    setSelected(idx);
+   412→   412→    setShowResult(true);
+   413→   413→    if (idx === checkpoint.answer) onComplete();
+   414→   414→  };
+   415→   415→
+   416→   416→  return (
+   417→   417→    <div className="bg-slate-800/50 rounded-xl p-5 border border-slate-700">
+   418→   418→      <h4 className="text-amber-400 font-semibold mb-3 flex items-center gap-2">
+   419→   419→        <Lightbulb className="w-4 h-4" /> Quick Check
+   420→   420→      </h4>
+   421→   421→      <p className="text-slate-200 mb-4 text-sm">{checkpoint.question}</p>
+   422→   422→      <div className="space-y-2">
+   423→   423→        {checkpoint.options.map((opt, i) => (
+   424→   424→          <button
+   425→   425→            key={i}
+   426→   426→            onClick={() => handleSelect(i)}
+   427→   427→            className={cn(
+   428→   428→              "w-full text-left px-4 py-2.5 rounded-lg text-sm transition-all border",
+   429→   429→              !showResult && "border-slate-600 hover:border-emerald-500 hover:bg-slate-700/50 text-slate-300",
+   430→   430→              showResult && i === checkpoint.answer && "border-emerald-500 bg-emerald-900/30 text-emerald-300",
+   431→   431→              showResult && i === selected && i !== checkpoint.answer && "border-red-500 bg-red-900/30 text-red-300",
+   432→   432→              showResult && i !== selected && i !== checkpoint.answer && "border-slate-700 text-slate-500"
+   433→   433→            )}
+   434→   434→          >
+   435→   435→            <span className="font-mono mr-2">{String.fromCharCode(65 + i)}.</span>{opt}
+   436→   436→          </button>
+   437→   437→        ))}
+   438→   438→      </div>
+   439→   439→      {showResult && (
+   440→   440→        <div className={cn("mt-3 p-3 rounded-lg text-sm", selected === checkpoint.answer ? "bg-emerald-900/20 text-emerald-300" : "bg-amber-900/20 text-amber-300")}>
+   441→   441→          {selected === checkpoint.answer ? "Correct! " : "Not quite. "}
+   442→   442→          {checkpoint.explanation}
+   443→   443→        </div>
+   444→   444→      )}
+   445→   445→    </div>
+   446→   446→  );
+   447→   447→}
+   448→   448→
+   449→   449→// ─── Test Case Results Panel ───────────────────────────────────
+   450→   450→function TestCaseResults({ results, onShowExpected }: { results: TestCaseResult[]; onShowExpected: (result: TestCaseResult) => void }) {
+   451→   451→  const passed = results.filter(r => r.passed).length;
+   452→   452→  const total = results.length;
+   453→   453→  const allPassed = passed === total;
+   454→   454→
+   455→   455→  return (
+   456→   456→    <div className="bg-slate-900 rounded-xl border border-slate-700 overflow-hidden">
+   457→   457→      <div className={cn(
+   458→   458→        "px-4 py-2.5 border-b border-slate-700 flex items-center justify-between",
+   459→   459→        allPassed ? "bg-emerald-900/20" : "bg-red-900/10"
+   460→   460→      )}>
+   461→   461→        <div className="flex items-center gap-2">
+   462→   462→          {allPassed ? (
+   463→   463→            <CheckCircle className="w-4 h-4 text-emerald-400" />
+   464→   464→          ) : (
+   465→   465→            <XCircle className="w-4 h-4 text-red-400" />
+   466→   466→          )}
+   467→   467→          <span className={cn("text-sm font-semibold", allPassed ? "text-emerald-400" : "text-red-400")}>
+   468→   468→            {allPassed ? 'All Test Cases Passed!' : `${passed}/${total} Test Cases Passed`}
+   469→   469→          </span>
+   470→   470→        </div>
+   471→   471→        <div className="flex items-center gap-1.5">
+   472→   472→          <div className="w-24 bg-slate-700 rounded-full h-2">
+   473→   473→            <div
+   474→   474→              className={cn("rounded-full h-2 transition-all duration-500", allPassed ? "bg-emerald-500" : "bg-amber-500")}
+   475→   475→              style={{ width: `${total > 0 ? (passed / total) * 100 : 0}%` }}
+   476→   476→            />
+   477→   477→          </div>
+   478→   478→          <span className="text-xs text-slate-400">{passed}/{total}</span>
+   479→   479→        </div>
+   480→   480→      </div>
+   481→   481→      <div className="divide-y divide-slate-800">
+   482→   482→        {results.map((result, idx) => (
+   483→   483→          <div key={result.id} className="px-4 py-3 hover:bg-slate-800/30 transition-colors">
+   484→   484→            <div className="flex items-start gap-3">
+   485→   485→              <div className="flex-shrink-0 mt-0.5">
+   486→   486→                {result.passed ? (
+   487→   487→                  <CheckCircle className="w-4 h-4 text-emerald-400" />
+   488→   488→                ) : (
+   489→   489→                  <XCircle className="w-4 h-4 text-red-400" />
+   490→   490→                )}
+   491→   491→              </div>
+   492→   492→              <div className="flex-1 min-w-0">
+   493→   493→                <div className="flex items-center gap-2 mb-1">
+   494→   494→                  <span className={cn(
+   495→   495→                    "text-[10px] px-1.5 py-0.5 rounded font-mono font-semibold border",
+   496→   496→                    result.passed
+   497→   497→                      ? "text-emerald-400 bg-emerald-900/20 border-emerald-800"
+   498→   498→                      : "text-red-400 bg-red-900/20 border-red-800"
+   499→   499→                  )}>
+   500→   500→                    {result.type.replace('_', ' ').toUpperCase()}
+   501→   501→                  </span>
+   502→   502→                  <span className={cn("text-xs font-medium", result.passed ? "text-slate-300" : "text-slate-200")}>
+   503→   503→                    Test {idx + 1}: {result.description}
+   504→   504→                  </span>
+   505→   505→                </div>
+   506→   506→                <p className={cn("text-xs", result.passed ? "text-emerald-400/70" : "text-red-400/80")}>
+   507→   507→                  {result.message}
+   508→   508→                </p>
+   509→   509→                {!result.passed && result.expected !== undefined && (
+   510→   510→                  <button
+   511→   511→                    onClick={() => onShowExpected(result)}
+   512→   512→                    className="mt-1.5 text-[10px] text-slate-500 hover:text-amber-400 transition-colors underline"
+   513→   513→                  >
+   514→   514→                    View expected vs actual
+   515→   515→                  </button>
+   516→   516→                )}
+   517→   517→              </div>
+   518→   518→              <span className={cn(
+   519→   519→                "text-xs font-bold flex-shrink-0",
+   520→   520→                result.passed ? "text-emerald-500" : "text-red-500"
+   521→   521→              )}>
+   522→   522→                {result.passed ? 'PASS' : 'FAIL'}
+   523→   523→              </span>
+   524→   524→            </div>
+   525→   525→          </div>
+   526→   526→        ))}
+   527→   527→      </div>
+   528→   528→    </div>
+   529→   529→  );
+   530→   530→}
+   531→   531→
+   532→   532→// ─── Learn Mode ────────────────────────────────────────────────
+   533→   533→function LearnMode() {
+   534→   534→  const { currentTopicId, setCurrentTopic, completedTopics, toggleComplete, isCompleted } = useLearningStore();
+   535→   535→  const [expandedPhase, setExpandedPhase] = useState<string>('1');
+   536→   536→  const [queryResult, setQueryResult] = useState<{ columns: string[]; rows: any[][]; error: string | null } | null>(null);
+   537→   537→  const [activeSection, setActiveSection] = useState<'story' | 'steps' | 'code' | 'syntax' | 'mistakes' | 'quiz'>('story');
+   538→   538→  const { sidebarOpen, setSidebarOpen } = useLearningStore();
+   539→   539→
+   540→   540→  const currentTopic = phases.flatMap(p => p.topics).find(t => t.id === currentTopicId) || phases[0].topics[0];
+   541→   541→
+   542→   542→  const allTopics = phases.flatMap(p => p.topics);
+   543→   543→  const currentIdx = allTopics.findIndex(t => t.id === currentTopic.id);
+   544→   544→  const prevTopic = currentIdx > 0 ? allTopics[currentIdx - 1] : null;
+   545→   545→  const nextTopic = currentIdx < allTopics.length - 1 ? allTopics[currentIdx + 1] : null;
+   546→   546→
+   547→   547→  const completedCount = completedTopics.length;
+   548→   548→  const totalCount = allTopics.length;
+   549→   549→
+   550→   550→  useEffect(() => { setQueryResult(null); setActiveSection('story'); }, [currentTopicId]);
+   551→   551→
+   552→   552→  const handleQueryResult = useCallback((result: { columns: string[]; rows: any[][]; error: string | null }) => {
+   553→   553→    setQueryResult(result);
+   554→   554→  }, []);
+   555→   555→
+   556→   556→  const sections = [
+   557→   557→    { id: 'story' as const, label: 'Concept', icon: <BookOpen className="w-3.5 h-3.5" /> },
+   558→   558→    { id: 'steps' as const, label: 'Step-by-Step', icon: <Code className="w-3.5 h-3.5" /> },
+   559→   559→    { id: 'code' as const, label: 'Try It', icon: <Play className="w-3.5 h-3.5" /> },
+   560→   560→    { id: 'syntax' as const, label: 'Syntax', icon: <BookOpen className="w-3.5 h-3.5" /> },
+   561→   561→    { id: 'mistakes' as const, label: 'Pitfalls', icon: <AlertTriangle className="w-3.5 h-3.5" /> },
+   562→   562→    { id: 'quiz' as const, label: 'Quiz', icon: <CheckCircle className="w-3.5 h-3.5" /> },
+   563→   563→  ];
+   564→   564→
+   565→   565→  return (
+   566→   566→    <div className="flex h-[calc(100vh-3.5rem)]">
+   567→   567→      {/* Sidebar */}
+   568→   568→      <div className={cn(
+   569→   569→        "fixed inset-y-0 left-0 z-40 w-72 bg-slate-900 border-r border-slate-800 transform transition-transform duration-200 lg:relative lg:translate-x-0",
+   570→   570→        sidebarOpen ? "translate-x-0" : "-translate-x-full"
+   571→   571→      )}>
+   572→   572→        <div className="flex items-center justify-between p-4 border-b border-slate-800">
+   573→   573→          <div className="flex items-center gap-2">
+   574→   574→            <span className="text-lg">🗃️</span>
+   575→   575→            <span className="font-bold text-emerald-400">SQL Mastery</span>
+   576→   576→          </div>
+   577→   577→          <button onClick={() => setSidebarOpen(false)} className="lg:hidden text-slate-400 hover:text-white"><X className="w-5 h-5" /></button>
+   578→   578→        </div>
+   579→   579→
+   580→   580→        {/* Progress */}
+   581→   581→        <div className="px-4 py-3 border-b border-slate-800">
+   582→   582→          <div className="flex justify-between text-xs text-slate-400 mb-1.5">
+   583→   583→            <span>Progress</span>
+   584→   584→            <span>{completedCount}/{totalCount} topics</span>
+   585→   585→          </div>
+   586→   586→          <div className="w-full bg-slate-700 rounded-full h-2">
+   587→   587→            <div className="bg-emerald-500 rounded-full h-2 transition-all duration-500" style={{ width: `${totalCount > 0 ? (completedCount / totalCount) * 100 : 0}%` }} />
+   588→   588→          </div>
+   589→   589→        </div>
+   590→   590→
+   591→   591→        {/* Topics */}
+   592→   592→        <div className="overflow-y-auto flex-1 p-2" style={{ maxHeight: 'calc(100vh - 10rem)' }}>
+   593→   593→          {phases.map(phase => (
+   594→   594→            <div key={phase.id} className="mb-1">
+   595→   595→              <button
+   596→   596→                onClick={() => setExpandedPhase(expandedPhase === phase.id ? '' : phase.id)}
+   597→   597→                className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-slate-300 hover:bg-slate-800 transition-colors"
+   598→   598→              >
+   599→   599→                <span>{phase.icon}</span>
+   600→   600→                <span className="flex-1 text-left">{phase.title}</span>
+   601→   601→                {expandedPhase === phase.id ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+   602→   602→              </button>
+   603→   603→              {expandedPhase === phase.id && (
+   604→   604→                <div className="ml-4 space-y-0.5 animate-fade-in">
+   605→   605→                  {phase.topics.map(topic => (
+   606→   606→                    <button
+   607→   607→                      key={topic.id}
+   608→   608→                      onClick={() => { setCurrentTopic(topic.id); setSidebarOpen(false); }}
+   609→   609→                      className={cn(
+   610→   610→                        "w-full flex items-center gap-2 px-3 py-2 rounded-md text-xs transition-all text-left",
+   611→   611→                        currentTopicId === topic.id ? "bg-emerald-900/40 text-emerald-300 border border-emerald-800" : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
+   612→   612→                      )}
+   613→   613→                    >
+   614→   614→                      {isCompleted(topic.id) ? <CheckCircle className="w-3.5 h-3.5 text-emerald-500 flex-shrink-0" /> : <div className="w-3.5 h-3.5 rounded-full border border-slate-600 flex-shrink-0" />}
+   615→   615→                      <span className="truncate">{topic.id} — {topic.title}</span>
+   616→   616→                    </button>
+   617→   617→                  ))}
+   618→   618→                </div>
+   619→   619→              )}
+   620→   620→            </div>
+   621→   621→          ))}
+   622→   622→        </div>
+   623→   623→      </div>
+   624→   624→
+   625→   625→      {/* Overlay for mobile sidebar */}
+   626→   626→      {sidebarOpen && <div className="fixed inset-0 z-30 bg-black/50 lg:hidden" onClick={() => setSidebarOpen(false)} />}
+   627→   627→
+   628→   628→      {/* Main Content */}
+   629→   629→      <div className="flex-1 overflow-y-auto">
+   630→   630→        {/* Top bar */}
+   631→   631→        <div className="sticky top-0 z-10 bg-slate-950/90 backdrop-blur-sm border-b border-slate-800 px-4 py-2.5 flex items-center gap-3">
+   632→   632→          <button onClick={() => setSidebarOpen(true)} className="lg:hidden text-slate-400 hover:text-white"><Menu className="w-5 h-5" /></button>
+   633→   633→          <div className="flex-1 min-w-0">
+   634→   634→            <h2 className="text-sm font-semibold text-slate-200 truncate">{currentTopic.id} — {currentTopic.title}</h2>
+   635→   635→          </div>
+   636→   636→          <button
+   637→   637→            onClick={() => toggleComplete(currentTopic.id)}
+   638→   638→            className={cn(
+   639→   639→              "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all",
+   640→   640→              isCompleted(currentTopic.id) ? "bg-emerald-900/40 text-emerald-400 border border-emerald-800" : "bg-slate-800 text-slate-400 hover:text-slate-200 border border-slate-700"
+   641→   641→            )}
+   642→   642→          >
+   643→   643→            <CheckCircle className="w-3.5 h-3.5" />
+   644→   644→            {isCompleted(currentTopic.id) ? 'Completed' : 'Mark Done'}
+   645→   645→          </button>
+   646→   646→        </div>
+   647→   647→
+   648→   648→        {/* Section tabs */}
+   649→   649→        <div className="border-b border-slate-800 px-4 flex gap-1 overflow-x-auto">
+   650→   650→          {sections.map(s => (
+   651→   651→            <button
+   652→   652→              key={s.id}
+   653→   653→              onClick={() => setActiveSection(s.id)}
+   654→   654→              className={cn(
+   655→   655→                "flex items-center gap-1.5 px-3 py-2.5 text-xs font-medium border-b-2 transition-all whitespace-nowrap",
+   656→   656→                activeSection === s.id ? "border-emerald-500 text-emerald-400" : "border-transparent text-slate-500 hover:text-slate-300"
+   657→   657→              )}
+   658→   658→            >
+   659→   659→              {s.icon} {s.label}
+   660→   660→            </button>
+   661→   661→          ))}
+   662→   662→        </div>
+   663→   663→
+   664→   664→        {/* Content */}
+   665→   665→        <div className="p-4 max-w-4xl mx-auto animate-fade-in">
+   666→   666→          {/* Concept */}
+   667→   667→          {activeSection === 'story' && (
+   668→   668→            <div className="space-y-6">
+   669→   669→              <div className="whitespace-pre-line text-slate-300 leading-relaxed text-sm">{currentTopic.story}</div>
+   670→   670→              <div className="bg-slate-900 rounded-xl p-4 border border-slate-700">
+   671→   671→                <h4 className="text-xs font-semibold text-slate-400 mb-2 uppercase tracking-wider">Visual</h4>
+   672→   672→                <pre className="text-emerald-300/80 text-xs leading-relaxed overflow-x-auto">{currentTopic.tableViz}</pre>
+   673→   673→              </div>
+   674→   674→              <div className="flex flex-wrap gap-2">
+   675→   675→                {currentTopic.subtopics.map(st => (
+   676→   676→                  <span key={st} className="px-2.5 py-1 rounded-full text-xs bg-slate-800 text-slate-400 border border-slate-700">{st}</span>
+   677→   677→                ))}
+   678→   678→              </div>
+   679→   679→            </div>
+   680→   680→          )}
+   681→   681→
+   682→   682→          {/* Step-by-step */}
+   683→   683→          {activeSection === 'steps' && (
+   684→   684→            <div className="space-y-4">
+   685→   685→              <h3 className="text-sm font-semibold text-slate-200">Step-by-Step Breakdown</h3>
+   686→   686→              {currentTopic.stepByStep.map((step, i) => (
+   687→   687→                <div key={i} className="bg-slate-900 rounded-xl p-4 border border-slate-700">
+   688→   688→                  <div className="flex items-start gap-3">
+   689→   689→                    <span className="flex-shrink-0 w-6 h-6 rounded-full bg-emerald-900/50 text-emerald-400 flex items-center justify-center text-xs font-bold">{i + 1}</span>
+   690→   690→                    <div className="flex-1 space-y-2">
+   691→   691→                      <code className="text-amber-300 text-sm font-mono block bg-slate-950 px-3 py-2 rounded-md">{step.line}</code>
+   692→   692→                      <p className="text-slate-300 text-sm">{step.explanation}</p>
+   693→   693→                      <p className="text-emerald-400/80 text-xs font-medium">Result: {step.result}</p>
+   694→   694→                    </div>
+   695→   695→                  </div>
+   696→   696→                </div>
+   697→   697→              ))}
+   698→   698→            </div>
+   699→   699→          )}
+   700→   700→
+   701→   701→          {/* Try It (Code) */}
+   702→   702→          {activeSection === 'code' && (
+   703→   703→            <div className="space-y-4">
+   704→   704→              <div className="flex items-center justify-between">
+   705→   705→                <h3 className="text-sm font-semibold text-slate-200">SQL Playground</h3>
+   706→   706→                <span className="text-xs text-slate-500">Ctrl+Enter to run</span>
+   707→   707→              </div>
+   708→   708→              <SqlEditor
+   709→   709→                initialCode={currentTopic.code}
+   710→   710→                onRun={(result) => setQueryResult(result)}
+   711→   711→                schema={currentTopic.schema}
+   712→   712→              />
+   713→   713→              {queryResult && (
+   714→   714→                <div className="bg-slate-900 rounded-xl border border-slate-700 overflow-hidden">
+   715→   715→                  <div className="px-4 py-2 border-b border-slate-700 flex items-center gap-2">
+   716→   716→                    {queryResult.error ? (
+   717→   717→                      <span className="text-red-400 text-xs font-semibold">Error</span>
+   718→   718→                    ) : (
+   719→   719→                      <span className="text-emerald-400 text-xs font-semibold">Result ({queryResult.rows.length} rows)</span>
+   720→   720→                    )}
+   721→   721→                  </div>
+   722→   722→                  {queryResult.error ? (
+   723→   723→                    <div className="p-4 text-red-400 text-sm font-mono">{queryResult.error}</div>
+   724→   724→                  ) : (
+   725→   725→                    <ResultTable columns={queryResult.columns} rows={queryResult.rows} />
+   726→   726→                  )}
+   727→   727→                </div>
+   728→   728→              )}
+   729→   729→            </div>
+   730→   730→          )}
+   731→   731→
+   732→   732→          {/* Syntax Card */}
+   733→   733→          {activeSection === 'syntax' && (
+   734→   734→            <div className="space-y-4">
+   735→   735→              <div className="bg-slate-900 rounded-xl p-5 border border-emerald-900/30">
+   736→   736→                <h4 className="text-emerald-400 font-semibold text-sm mb-3">{currentTopic.syntaxCard.title}</h4>
+   737→   737→                <pre className="text-amber-300/90 text-sm leading-relaxed overflow-x-auto whitespace-pre-wrap">{currentTopic.syntaxCard.content}</pre>
+   738→   738→              </div>
+   739→   739→            </div>
+   740→   740→          )}
+   741→   741→
+   742→   742→          {/* Common Mistakes */}
+   743→   743→          {activeSection === 'mistakes' && (
+   744→   744→            <div className="space-y-4">
+   745→   745→              <h3 className="text-sm font-semibold text-slate-200">Common Mistakes to Avoid</h3>
+   746→   746→              {currentTopic.mistakes.map((m, i) => (
+   747→   747→                <div key={i} className="bg-slate-900 rounded-xl p-4 border border-red-900/20">
+   748→   748→                  <div className="space-y-3">
+   749→   749→                    <div className="flex items-start gap-2">
+   750→   750→                      <span className="text-red-400 text-xs font-bold mt-0.5">WRONG</span>
+   751→   751→                      <code className="text-red-300/80 text-sm font-mono flex-1">{m.wrong}</code>
+   752→   752→                    </div>
+   753→   753→                    <div className="flex items-start gap-2">
+   754→   754→                      <span className="text-emerald-400 text-xs font-bold mt-0.5">RIGHT</span>
+   755→   755→                      <code className="text-emerald-300/80 text-sm font-mono flex-1">{m.correct}</code>
+   756→   756→                    </div>
+   757→   757→                    <p className="text-slate-400 text-xs pl-12">{m.explanation}</p>
+   758→   758→                  </div>
+   759→   759→                </div>
+   760→   760→              ))}
+   761→   761→            </div>
+   762→   762→          )}
+   763→   763→
+   764→   764→          {/* Quiz */}
+   765→   765→          {activeSection === 'quiz' && (
+   766→   766→            <CheckpointQuiz
+   767→   767→              checkpoint={currentTopic.checkpoint}
+   768→   768→              onComplete={() => {
+   769→   769→                if (!isCompleted(currentTopic.id)) toggleComplete(currentTopic.id);
+   770→   770→              }}
+   771→   771→            />
+   772→   772→          )}
+   773→   773→
+   774→   774→          {/* Navigation */}
+   775→   775→          <div className="flex justify-between items-center mt-8 pt-4 border-t border-slate-800">
+   776→   776→            {prevTopic ? (
+   777→   777→              <button
+   778→   778→                onClick={() => setCurrentTopic(prevTopic.id)}
+   779→   779→                className="flex items-center gap-1 text-xs text-slate-400 hover:text-emerald-400 transition-colors"
+   780→   780→              >
+   781→   781→                <ChevronRight className="w-3 h-3 rotate-180" /> {prevTopic.id} {prevTopic.title}
+   782→   782→              </button>
+   783→   783→            ) : <div />}
+   784→   784→            {nextTopic ? (
+   785→   785→              <button
+   786→   786→                onClick={() => setCurrentTopic(nextTopic.id)}
+   787→   787→                className="flex items-center gap-1 text-xs text-slate-400 hover:text-emerald-400 transition-colors"
+   788→   788→              >
+   789→   789→                {nextTopic.id} {nextTopic.title} <ChevronRight className="w-3 h-3" />
+   790→   790→              </button>
+   791→   791→            ) : <div />}
+   792→   792→          </div>
+   793→   793→        </div>
+   794→   794→      </div>
+   795→   795→    </div>
+   796→   796→  );
+   797→   797→}
+   798→   798→
+   799→   799→// ─── Practice Mode ─────────────────────────────────────────────
+   800→   800→function PracticeMode() {
+   801→   801→  const { practiceFilter, setPracticeFilter, practiceCategory, setPracticeCategory, completedProblems, toggleProblemComplete, isProblemCompleted, currentProblemId, setCurrentProblem } = useLearningStore();
+   802→   802→  const [queryResult, setQueryResult] = useState<{ columns: string[]; rows: any[][]; error: string | null } | null>(null);
+   803→   803→  const [testResults, setTestResults] = useState<TestCaseResult[] | null>(null);
+   804→   804→  const [showHint, setShowHint] = useState(false);
+   805→   805→  const [showSolution, setShowSolution] = useState(false);
+   806→   806→  const [solved, setSolved] = useState(false);
+   807→   807→  const [activeResultTab, setActiveResultTab] = useState<'output' | 'tests'>('tests');
+   808→   808→  const [showDiffModal, setShowDiffModal] = useState<TestCaseResult | null>(null);
+   809→   809→  const [lastQuery, setLastQuery] = useState<string>('');
+   810→   810→  const [isRunning, setIsRunning] = useState(false);
+   811→   811→  const { sidebarOpen, setSidebarOpen } = useLearningStore();
+   812→   812→
+   813→   813→  const categories = ['all', ...Array.from(new Set(problems.map(p => p.category)))];
+   814→   814→  const filteredProblems = problems.filter(p => {
+   815→   815→    if (practiceFilter !== 'all' && p.difficulty !== practiceFilter) return false;
+   816→   816→    if (practiceCategory !== 'all' && p.category !== practiceCategory) return false;
+   817→   817→    return true;
+   818→   818→  });
+   819→   819→
+   820→   820→  const currentProblem = currentProblemId ? problems.find(p => p.id === currentProblemId) : null;
+   821→   821→  const completedCount = completedProblems.length;
+   822→   822→
+   823→   823→  useEffect(() => {
+   824→   824→    setQueryResult(null);
+   825→   825→    setTestResults(null);
+   826→   826→    setShowHint(false);
+   827→   827→    setShowSolution(false);
+   828→   828→    setSolved(false);
+   829→   829→    setActiveResultTab('tests');
+   830→   830→    setShowDiffModal(null);
+   831→   831→  }, [currentProblemId]);
+   832→   832→
+   833→   833→  const handleQueryResult = useCallback(async (result: { columns: string[]; rows: any[][]; error: string | null }, query: string) => {
+   834→   834→    setQueryResult(result);
+   835→   835→    setLastQuery(query);
+   836→   836→    setTestResults(null);
+   837→   837→
+   838→   838→    if (!result.error && currentProblem) {
+   839→   839→      setIsRunning(true);
+   840→   840→      // Run full test case validation
+   841→   841→      const tcResults = await runTestCases(currentProblem, query);
+   842→   842→      setTestResults(tcResults);
+   843→   843→      setIsRunning(false);
+   844→   844→
+   845→   845→      const allPassed = tcResults.every(r => r.passed);
+   846→   846→      if (allPassed) {
+   847→   847→        setSolved(true);
+   848→   848→        if (!isProblemCompleted(currentProblem.id)) toggleProblemComplete(currentProblem.id);
+   849→   849→      } else {
+   850→   850→        setSolved(false);
+   851→   851→      }
+   852→   852→      setActiveResultTab('tests');
+   853→   853→    }
+   854→   854→  }, [currentProblem, isProblemCompleted, toggleProblemComplete]);
+   855→   855→
+   856→   856→  const handleRunTests = useCallback(async () => {
+   857→   857→    if (!currentProblem || !lastQuery) return;
+   858→   858→    setIsRunning(true);
+   859→   859→    const result = await executeQueryApi(currentProblem.schema, lastQuery);
+   860→   860→    setQueryResult(result);
+   861→   861→    if (!result.error) {
+   862→   862→      const tcResults = await runTestCases(currentProblem, lastQuery);
+   863→   863→      setTestResults(tcResults);
+   864→   864→      const allPassed = tcResults.every(r => r.passed);
+   865→   865→      if (allPassed) {
+   866→   866→        setSolved(true);
+   867→   867→        if (!isProblemCompleted(currentProblem.id)) toggleProblemComplete(currentProblem.id);
+   868→   868→      } else {
+   869→   869→        setSolved(false);
+   870→   870→      }
+   871→   871→    }
+   872→   872→    setIsRunning(false);
+   873→   873→  }, [currentProblem, lastQuery, isProblemCompleted, toggleProblemComplete]);
+   874→   874→
+   875→   875→  const difficultyColor = (d: string) => d === 'Easy' ? 'text-emerald-400 bg-emerald-900/20 border-emerald-800' : d === 'Medium' ? 'text-amber-400 bg-amber-900/20 border-amber-800' : 'text-red-400 bg-red-900/20 border-red-800';
+   876→   876→
+   877→   877→  return (
+   878→   878→    <div className="flex h-[calc(100vh-3.5rem)]">
+   879→   879→      {/* Sidebar */}
+   880→   880→      <div className={cn(
+   881→   881→        "fixed inset-y-0 left-0 z-40 w-72 bg-slate-900 border-r border-slate-800 transform transition-transform duration-200 lg:relative lg:translate-x-0",
+   882→   882→        sidebarOpen ? "translate-x-0" : "-translate-x-full"
+   883→   883→      )}>
+   884→   884→        <div className="flex items-center justify-between p-4 border-b border-slate-800">
+   885→   885→          <div className="flex items-center gap-2">
+   886→   886→            <Trophy className="w-5 h-5 text-amber-400" />
+   887→   887→            <span className="font-bold text-amber-400">Practice</span>
+   888→   888→          </div>
+   889→   889→          <button onClick={() => setSidebarOpen(false)} className="lg:hidden text-slate-400 hover:text-white"><X className="w-5 h-5" /></button>
+   890→   890→        </div>
+   891→   891→
+   892→   892→        {/* Progress & Filters */}
+   893→   893→        <div className="px-4 py-3 border-b border-slate-800 space-y-3">
+   894→   894→          <div className="flex justify-between text-xs text-slate-400">
+   895→   895→            <span>Solved</span>
+   896→   896→            <span>{completedCount}/{problems.length} problems</span>
+   897→   897→          </div>
+   898→   898→          <div className="w-full bg-slate-700 rounded-full h-2">
+   899→   899→            <div className="bg-amber-500 rounded-full h-2 transition-all duration-500" style={{ width: `${problems.length > 0 ? (completedCount / problems.length) * 100 : 0}%` }} />
+   900→   900→          </div>
+   901→   901→          <div className="flex gap-1 flex-wrap">
+   902→   902→            {(['all', 'Easy', 'Medium', 'Hard'] as const).map(f => (
+   903→   903→              <button
+   904→   904→                key={f}
+   905→   905→                onClick={() => setPracticeFilter(f)}
+   906→   906→                className={cn(
+   907→   907→                  "px-2.5 py-1 rounded-md text-xs font-medium transition-all",
+   908→   908→                  practiceFilter === f ? "bg-slate-700 text-white" : "text-slate-500 hover:text-slate-300"
+   909→   909→                )}
+   910→   910→              >{f === 'all' ? 'All' : f}</button>
+   911→   911→            ))}
+   912→   912→          </div>
+   913→   913→          <select
+   914→   914→            value={practiceCategory}
+   915→   915→            onChange={(e) => setPracticeCategory(e.target.value)}
+   916→   916→            className="w-full bg-slate-800 text-slate-300 text-xs rounded-lg px-3 py-2 border border-slate-700 focus:border-amber-500 focus:outline-none"
+   917→   917→          >
+   918→   918→            {categories.map(c => <option key={c} value={c}>{c === 'all' ? 'All Categories' : c}</option>)}
+   919→   919→          </select>
+   920→   920→        </div>
+   921→   921→
+   922→   922→        {/* Problem List */}
+   923→   923→        <div className="overflow-y-auto flex-1 p-2" style={{ maxHeight: 'calc(100vh - 16rem)' }}>
+   924→   924→          {filteredProblems.map(p => (
+   925→   925→            <button
+   926→   926→              key={p.id}
+   927→   927→              onClick={() => { setCurrentProblem(p.id); setSidebarOpen(false); }}
+   928→   928→              className={cn(
+   929→   929→                "w-full flex items-center gap-2 px-3 py-2 rounded-md text-xs transition-all text-left mb-0.5",
+   930→   930→                currentProblemId === p.id ? "bg-amber-900/30 text-amber-300 border border-amber-800" : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
+   931→   931→              )}
+   932→   932→            >
+   933→   933→              {isProblemCompleted(p.id) ? <CheckCircle className="w-3.5 h-3.5 text-emerald-500 flex-shrink-0" /> : <div className="w-3.5 h-3.5 rounded-full border border-slate-600 flex-shrink-0" />}
+   934→   934→              <span className="flex-1 truncate">{p.id}. {p.title}</span>
+   935→   935→              <span className={cn("text-[10px] px-1.5 py-0.5 rounded border flex-shrink-0", difficultyColor(p.difficulty))}>{p.difficulty}</span>
+   936→   936→            </button>
+   937→   937→          ))}
+   938→   938→          {filteredProblems.length === 0 && <div className="text-slate-500 text-xs text-center py-4">No problems match your filters</div>}
+   939→   939→        </div>
+   940→   940→      </div>
+   941→   941→
+   942→   942→      {sidebarOpen && <div className="fixed inset-0 z-30 bg-black/50 lg:hidden" onClick={() => setSidebarOpen(false)} />}
+   943→   943→
+   944→   944→      {/* Main Content */}
+   945→   945→      <div className="flex-1 overflow-y-auto">
+   946→   946→        {currentProblem ? (
+   947→   947→          <>
+   948→   948→            <div className="sticky top-0 z-10 bg-slate-950/90 backdrop-blur-sm border-b border-slate-800 px-4 py-2.5 flex items-center gap-3">
+   949→   949→              <button onClick={() => setSidebarOpen(true)} className="lg:hidden text-slate-400 hover:text-white"><Menu className="w-5 h-5" /></button>
+   950→   950→              <span className={cn("text-[10px] px-2 py-1 rounded border font-semibold", difficultyColor(currentProblem.difficulty))}>{currentProblem.difficulty}</span>
+   951→   951→              <span className="text-xs text-slate-500 bg-slate-800 px-2 py-1 rounded">{currentProblem.category}</span>
+   952→   952→              <h2 className="text-sm font-semibold text-slate-200 flex-1 truncate">{currentProblem.id}. {currentProblem.title}</h2>
+   953→   953→              {testResults && (
+   954→   954→                <span className={cn(
+   955→   955→                  "text-xs font-semibold flex items-center gap-1",
+   956→   956→                  testResults.every(r => r.passed) ? "text-emerald-400" : "text-red-400"
+   957→   957→                )}>
+   958→   958→                  {testResults.every(r => r.passed) ? <><CheckCircle className="w-3.5 h-3.5" /> All Passed</> : <><XCircle className="w-3.5 h-3.5" /> {testResults.filter(r => r.passed).length}/{testResults.length}</>}
+   959→   959→                </span>
+   960→   960→              )}
+   961→   961→              {solved && !testResults && <span className="text-emerald-400 text-xs font-semibold flex items-center gap-1"><CheckCircle className="w-3.5 h-3.5" /> Solved!</span>}
+   962→   962→            </div>
+   963→   963→
+   964→   964→            <div className="p-4 max-w-4xl mx-auto space-y-4 animate-fade-in">
+   965→   965→              {/* Problem Description */}
+   966→   966→              <div className="bg-slate-900 rounded-xl p-5 border border-slate-700">
+   967→   967→                <p className="text-slate-200 text-sm leading-relaxed">{currentProblem.description}</p>
+   968→   968→                <div className="mt-3 flex items-center gap-2 text-xs text-slate-500">
+   969→   969→                  <Flask className="w-3.5 h-3.5" />
+   970→   970→                  <span>{currentProblem.testCases.length} test cases</span>
+   971→   971→                </div>
+   972→   972→              </div>
+   973→   973→
+   974→   974→              {/* SQL Editor */}
+   975→   975→              <SqlEditor
+   976→   976→                initialCode={`-- Write your solution here\n`}
+   977→   977→                onRun={handleQueryResult}
+   978→   978→                schema={currentProblem.schema}
+   979→   979→                runLabel="Run & Test"
+   980→   980→              />
+   981→   981→
+   982→   982→              {/* Query Result & Test Cases */}
+   983→   983→              {(queryResult || testResults) && (
+   984→   984→                <>
+   985→   985→                  {/* Tab bar */}
+   986→   986→                  <div className="flex gap-1 border-b border-slate-800">
+   987→   987→                    <button
+   988→   988→                      onClick={() => setActiveResultTab('tests')}
+   989→   989→                      className={cn(
+   990→   990→                        "flex items-center gap-1.5 px-3 py-2 text-xs font-medium border-b-2 transition-all",
+   991→   991→                        activeResultTab === 'tests' ? "border-amber-500 text-amber-400" : "border-transparent text-slate-500 hover:text-slate-300"
+   992→   992→                      )}
+   993→   993→                    >
+   994→   994→                      <Flask className="w-3.5 h-3.5" /> Test Results
+   995→   995→                      {testResults && (
+   996→   996→                        <span className={cn(
+   997→   997→                          "px-1.5 py-0.5 rounded text-[10px] font-bold",
+   998→   998→                          testResults.every(r => r.passed) ? "bg-emerald-900/30 text-emerald-400" : "bg-red-900/30 text-red-400"
+   999→   999→                        )}>
+  1000→  1000→                          {testResults.filter(r => r.passed).length}/{testResults.length}
+  1001→  1001→                        </span>
+  1002→  1002→                      )}
+  1003→  1003→                    </button>
+  1004→  1004→                    <button
+  1005→  1005→                      onClick={() => setActiveResultTab('output')}
+  1006→  1006→                      className={cn(
+  1007→  1007→                        "flex items-center gap-1.5 px-3 py-2 text-xs font-medium border-b-2 transition-all",
+  1008→  1008→                        activeResultTab === 'output' ? "border-emerald-500 text-emerald-400" : "border-transparent text-slate-500 hover:text-slate-300"
+  1009→  1009→                      )}
+  1010→  1010→                    >
+  1011→  1011→                      <Terminal className="w-3.5 h-3.5" /> Console Output
+  1012→  1012→                    </button>
+  1013→  1013→                  </div>
+  1014→  1014→
+  1015→  1015→                  {/* Test Results Tab */}
+  1016→  1016→                  {activeResultTab === 'tests' && testResults && (
+  1017→  1017→                    <TestCaseResults
+  1018→  1018→                      results={testResults}
+  1019→  1019→                      onShowExpected={(result) => setShowDiffModal(result)}
+  1020→  1020→                    />
+  1021→  1021→                  )}
+  1022→  1022→
+  1023→  1023→                  {activeResultTab === 'tests' && !testResults && queryResult && (
+  1024→  1024→                    <div className="bg-slate-900 rounded-xl border border-slate-700 p-4 text-center">
+  1025→  1025→                      <p className="text-slate-400 text-sm">Run your query to see test results</p>
+  1026→  1026→                    </div>
+  1027→  1027→                  )}
+  1028→  1028→
+  1029→  1029→                  {/* Console Output Tab */}
+  1030→  1030→                  {activeResultTab === 'output' && queryResult && (
+  1031→  1031→                    <div className="bg-slate-900 rounded-xl border border-slate-700 overflow-hidden">
+  1032→  1032→                      <div className="px-4 py-2 border-b border-slate-700 flex items-center gap-2">
+  1033→  1033→                        {queryResult.error ? (
+  1034→  1034→                          <span className="text-red-400 text-xs font-semibold">Error</span>
+  1035→  1035→                        ) : (
+  1036→  1036→                          <span className="text-emerald-400 text-xs font-semibold">Result ({queryResult.rows.length} rows)</span>
+  1037→  1037→                        )}
+  1038→  1038→                      </div>
+  1039→  1039→                      {queryResult.error ? (
+  1040→  1040→                        <div className="p-4 text-red-400 text-sm font-mono">{queryResult.error}</div>
+  1041→  1041→                      ) : (
+  1042→  1042→                        <ResultTable columns={queryResult.columns} rows={queryResult.rows} />
+  1043→  1043→                      )}
+  1044→  1044→                    </div>
+  1045→  1045→                  )}
+  1046→  1046→                </>
+  1047→  1047→              )}
+  1048→  1048→
+  1049→  1049→              {/* Hint & Solution */}
+  1050→  1050→              <div className="flex gap-2">
+  1051→  1051→                <button
+  1052→  1052→                  onClick={() => setShowHint(!showHint)}
+  1053→  1053→                  className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium bg-amber-900/20 text-amber-400 border border-amber-800 hover:bg-amber-900/30 transition-colors"
+  1054→  1054→                >
+  1055→  1055→                  <Lightbulb className="w-3.5 h-3.5" /> {showHint ? 'Hide Hint' : 'Show Hint'}
+  1056→  1056→                </button>
+  1057→  1057→                <button
+  1058→  1058→                  onClick={() => setShowSolution(!showSolution)}
+  1059→  1059→                  className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium bg-slate-800 text-slate-400 border border-slate-700 hover:text-slate-200 transition-colors"
+  1060→  1060→                >
+  1061→  1061→                  {showSolution ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />} {showSolution ? 'Hide Solution' : 'Show Solution'}
+  1062→  1062→                </button>
+  1063→  1063→              </div>
+  1064→  1064→
+  1065→  1065→              {showHint && (
+  1066→  1066→                <div className="bg-amber-900/10 rounded-xl p-4 border border-amber-800/30 animate-fade-in">
+  1067→  1067→                  <p className="text-amber-300 text-sm"><Lightbulb className="w-4 h-4 inline mr-2" />{currentProblem.hint}</p>
+  1068→  1068→                </div>
+  1069→  1069→              )}
+  1070→  1070→
+  1071→  1071→              {showSolution && (
+  1072→  1072→                <div className="bg-slate-900 rounded-xl p-4 border border-emerald-900/30 animate-fade-in">
+  1073→  1073→                  <h4 className="text-emerald-400 text-xs font-semibold mb-2">Solution</h4>
+  1074→  1074→                  <pre className="text-emerald-300/90 text-sm overflow-x-auto">{currentProblem.solution}</pre>
+  1075→  1075→                </div>
+  1076→  1076→              )}
+  1077→  1077→            </div>
+  1078→  1078→          </>
+  1079→  1079→        ) : (
+  1080→  1080→          <div className="flex flex-col items-center justify-center h-full text-center px-4">
+  1081→  1081→            <Trophy className="w-16 h-16 text-amber-500/30 mb-4" />
+  1082→  1082→            <h2 className="text-xl font-bold text-slate-300 mb-2">Ready to Practice?</h2>
+  1083→  1083→            <p className="text-slate-500 text-sm mb-6 max-w-md">Select a problem from the sidebar to start solving. Filter by difficulty and category to find problems that match your skill level.</p>
+  1084→  1084→            <button onClick={() => setSidebarOpen(true)} className="lg:hidden px-4 py-2 rounded-lg bg-amber-600 text-white text-sm font-medium hover:bg-amber-500 transition-colors">
+  1085→  1085→              Browse Problems
+  1086→  1086→            </button>
+  1087→  1087→          </div>
+  1088→  1088→        )}
+  1089→  1089→      </div>
+  1090→  1090→
+  1091→  1091→      {/* Diff Modal */}
+  1092→  1092→      {showDiffModal && (
+  1093→  1093→        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60" onClick={() => setShowDiffModal(null)}>
+  1094→  1094→          <div className="bg-slate-900 rounded-xl border border-slate-700 max-w-lg w-full max-h-[80vh] overflow-auto" onClick={e => e.stopPropagation()}>
+  1095→  1095→            <div className="px-4 py-3 border-b border-slate-700 flex items-center justify-between">
+  1096→  1096→              <h3 className="text-sm font-semibold text-slate-200">Test Case Detail: {showDiffModal.description}</h3>
+  1097→  1097→              <button onClick={() => setShowDiffModal(null)} className="text-slate-400 hover:text-white"><X className="w-4 h-4" /></button>
+  1098→  1098→            </div>
+  1099→  1099→            <div className="p-4 space-y-4">
+  1100→  1100→              <div>
+  1101→  1101→                <h4 className="text-xs font-semibold text-emerald-400 mb-2 uppercase tracking-wider">Expected</h4>
+  1102→  1102→                <pre className="bg-slate-950 rounded-lg p-3 text-xs text-emerald-300 font-mono overflow-x-auto">
+  1103→  1103→                  {typeof showDiffModal.expected === 'object'
+  1104→  1104→                    ? JSON.stringify(showDiffModal.expected, null, 2)
+  1105→  1105→                    : String(showDiffModal.expected)}
+  1106→  1106→                </pre>
+  1107→  1107→              </div>
+  1108→  1108→              <div>
+  1109→  1109→                <h4 className="text-xs font-semibold text-red-400 mb-2 uppercase tracking-wider">Your Output</h4>
+  1110→  1110→                <pre className="bg-slate-950 rounded-lg p-3 text-xs text-red-300 font-mono overflow-x-auto">
+  1111→  1111→                  {typeof showDiffModal.actual === 'object'
+  1112→  1112→                    ? JSON.stringify(showDiffModal.actual, null, 2)
+  1113→  1113→                    : String(showDiffModal.actual)}
+  1114→  1114→                </pre>
+  1115→  1115→              </div>
+  1116→  1116→              <div className="bg-amber-900/10 rounded-lg p-3 border border-amber-800/30">
+  1117→  1117→                <p className="text-amber-300 text-xs">{showDiffModal.message}</p>
+  1118→  1118→              </div>
+  1119→  1119→            </div>
+  1120→  1120→          </div>
+  1121→  1121→        </div>
+  1122→  1122→      )}
+  1123→  1123→    </div>
+  1124→  1124→  );
+  1125→  1125→}
+  1126→  1126→
+  1127→  1127→// ─── Main App ──────────────────────────────────────────────────
+  1128→  1128→export default function Home() {
+  1129→  1129→  const { mode, setMode } = useLearningStore();
+  1130→  1130→
+  1131→  1131→  return (
+  1132→  1132→    <div className="min-h-screen bg-slate-950 text-slate-100">
+  1133→  1133→      {/* Header */}
+  1134→  1134→      <header className="sticky top-0 z-50 bg-slate-950/95 backdrop-blur-sm border-b border-slate-800">
+  1135→  1135→        <div className="flex items-center justify-between px-4 h-14">
+  1136→  1136→          <div className="flex items-center gap-3">
+  1137→  1137→            <span className="text-2xl">🗃️</span>
+  1138→  1138→            <div>
+  1139→  1139→              <h1 className="text-sm font-bold text-white leading-none">SQL Mastery</h1>
+  1140→  1140→              <p className="text-[10px] text-slate-500 leading-none mt-0.5">Zero to Placement Ready</p>
+  1141→  1141→            </div>
+  1142→  1142→          </div>
+  1143→  1143→
+  1144→  1144→          {/* Mode Toggle */}
+  1145→  1145→          <div className="flex items-center bg-slate-900 rounded-lg p-0.5 border border-slate-800">
+  1146→  1146→            <button
+  1147→  1147→              onClick={() => setMode('learn')}
+  1148→  1148→              className={cn(
+  1149→  1149→                "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all",
+  1150→  1150→                mode === 'learn' ? "bg-emerald-600 text-white shadow-lg" : "text-slate-400 hover:text-slate-200"
+  1151→  1151→              )}
+  1152→  1152→            >
+  1153→  1153→              <BookOpen className="w-3.5 h-3.5" /> Learn
+  1154→  1154→            </button>
+  1155→  1155→            <button
+  1156→  1156→              onClick={() => setMode('practice')}
+  1157→  1157→              className={cn(
+  1158→  1158→                "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all",
+  1159→  1159→                mode === 'practice' ? "bg-amber-600 text-white shadow-lg" : "text-slate-400 hover:text-slate-200"
+  1160→  1160→              )}
+  1161→  1161→            >
+  1162→  1162→              <Code className="w-3.5 h-3.5" /> Practice
+  1163→  1163→            </button>
+  1164→  1164→          </div>
+  1165→  1165→
+  1166→  1166→          {/* SQL Status */}
+  1167→  1167→          <div className="flex items-center gap-2">
+  1168→  1168→            <span className="text-xs text-emerald-500 flex items-center gap-1"><CheckCircle className="w-3 h-3" /> SQL Engine Ready</span>
+  1169→  1169→          </div>
+  1170→  1170→        </div>
+  1171→  1171→      </header>
+  1172→  1172→
+  1173→  1173→      {/* Content */}
+  1174→  1174→      {mode === 'learn' ? (
+  1175→  1175→        <LearnMode />
+  1176→  1176→      ) : (
+  1177→  1177→        <PracticeMode />
+  1178→  1178→      )}
+  1179→  1179→    </div>
+  1180→  1180→  );
+  1181→  1181→}
+  1182→  1182→

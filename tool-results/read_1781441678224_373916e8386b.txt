@@ -1,0 +1,502 @@
+     1→     1→     1→'use client';
+     2→     2→     2→
+     3→     3→     3→import { useState, useEffect, useRef, useCallback } from 'react';
+     4→     4→     4→import { phases, Phase, Topic } from '@/lib/curriculum';
+     5→     5→     5→import { problems, Problem, TestCase } from '@/lib/problems';
+     6→     6→     6→import { useLearningStore } from '@/lib/store';
+     7→     7→     7→import { cn } from '@/lib/utils';
+     8→     8→     8→
+     9→     9→     9→// ─── SQL Execution Engine (Server-side via API) ────────────────
+    10→    10→    10→async function executeQueryApi(schema: string, query: string): Promise<{ columns: string[]; rows: any[][]; error: string | null }> {
+    11→    11→    11→  try {
+    12→    12→    12→    const res = await fetch('/api/sql', {
+    13→    13→    13→      method: 'POST',
+    14→    14→    14→      headers: { 'Content-Type': 'application/json' },
+    15→    15→    15→      body: JSON.stringify({ query, schema }),
+    16→    16→    16→    });
+    17→    17→    17→    const data = await res.json();
+    18→    18→    18→    return { columns: data.columns || [], rows: data.rows || [], error: data.error || null };
+    19→    19→    19→  } catch (e: any) {
+    20→    20→    20→    return { columns: [], rows: [], error: e.message };
+    21→    21→    21→  }
+    22→    22→    22→}
+    23→    23→    23→
+    24→    24→    24→// ─── Test Case Validation Engine ───────────────────────────────
+    25→    25→    25→export interface TestCaseResult {
+    26→    26→    26→  id: string;
+    27→    27→    27→  description: string;
+    28→    28→    28→  type: string;
+    29→    29→    29→  passed: boolean;
+    30→    30→    30→  message: string;
+    31→    31→    31→  actual?: any;
+    32→    32→    32→  expected?: any;
+    33→    33→    33→}
+    34→    34→    34→
+    35→    35→    35→function normalizeVal(v: any): string {
+    36→    36→    36→  if (v === null || v === undefined) return 'NULL';
+    37→    37→    37→  if (typeof v === 'number') return String(v);
+    38→    38→    38→  return String(v).trim();
+    39→    39→    39→}
+    40→    40→    40→
+    41→    41→    41→function normalizeRow(row: any[]): string[] {
+    42→    42→    42→  return row.map(normalizeVal);
+    43→    43→    43→}
+    44→    44→    44→
+    45→    45→    45→function sortRowsForCompare(rows: any[][]): string[][] {
+    46→    46→    46→  return rows.map(normalizeRow).sort((a, b) => {
+    47→    47→    47→    for (let i = 0; i < Math.min(a.length, b.length); i++) {
+    48→    48→    48→      const cmp = a[i].localeCompare(b[i]);
+    49→    49→    49→      if (cmp !== 0) return cmp;
+    50→    50→    50→    }
+    51→    51→    51→    return 0;
+    52→    52→    52→  });
+    53→    53→    53→}
+    54→    54→    54→
+    55→    55→    55→function rowsEqual(a: any[][], b: any[][]): boolean {
+    56→    56→    56→  const sa = sortRowsForCompare(a);
+    57→    57→    57→  const sb = sortRowsForCompare(b);
+    58→    58→    58→  if (sa.length !== sb.length) return false;
+    59→    59→    59→  for (let i = 0; i < sa.length; i++) {
+    60→    60→    60→    if (sa[i].length !== sb[i].length) return false;
+    61→    61→    61→    for (let j = 0; j < sa[i].length; j++) {
+    62→    62→    62→      if (sa[i][j] !== sb[i][j]) return false;
+    63→    63→    63→    }
+    64→    64→    64→  }
+    65→    65→    65→  return true;
+    66→    66→    66→}
+    67→    67→    67→
+    68→    68→    68→function columnsMatch(expected: string[], actual: string[]): boolean {
+    69→    69→    69→  const e = expected.map(c => c.toLowerCase().trim());
+    70→    70→    70→  const a = actual.map(c => c.toLowerCase().trim());
+    71→    71→    71→  if (e.length !== a.length) return false;
+    72→    72→    72→  return e.every(col => a.includes(col));
+    73→    73→    73→}
+    74→    74→    74→
+    75→    75→    75→function columnsExactOrder(expected: string[], actual: string[]): boolean {
+    76→    76→    76→  const e = expected.map(c => c.toLowerCase().trim());
+    77→    77→    77→  const a = actual.map(c => c.toLowerCase().trim());
+    78→    78→    78→  if (e.length !== a.length) return false;
+    79→    79→    79→  return e.every((col, i) => col === a[i]);
+    80→    80→    80→}
+    81→    81→    81→
+    82→    82→    82→async function runTestCases(problem: Problem, userQuery: string): Promise<TestCaseResult[]> {
+    83→    83→    83→  const results: TestCaseResult[] = [];
+    84→    84→    84→
+    85→    85→    85→  // Run the solution query to get expected result
+    86→    86→    86→  const solutionResult = await executeQueryApi(problem.schema, problem.solution);
+    87→    87→    87→  if (solutionResult.error) {
+    88→    88→    88→    return problem.testCases.map(tc => ({
+    89→    89→    89→      id: tc.id,
+    90→    90→    90→      description: tc.description,
+    91→    91→    91→      type: tc.type,
+    92→    92→    92→      passed: false,
+    93→    93→    93→      message: `Solution query error: ${solutionResult.error}`,
+    94→    94→    94→    }));
+    95→    95→    95→  }
+    96→    96→    96→
+    97→    97→    97→  // Run the user's query
+    98→    98→    98→  const userResult = await executeQueryApi(problem.schema, userQuery);
+    99→    99→    99→  if (userResult.error) {
+   100→   100→   100→    return problem.testCases.map(tc => ({
+   101→   101→   101→      id: tc.id,
+   102→   102→   102→      description: tc.description,
+   103→   103→   103→      type: tc.type,
+   104→   104→   104→      passed: false,
+   105→   105→   105→      message: `Query Error: ${userResult.error}`,
+   106→   106→   106→    }));
+   107→   107→   107→  }
+   108→   108→   108→
+   109→   109→   109→  for (const tc of problem.testCases) {
+   110→   110→   110→    const expectedCols = tc.expectedColumns || solutionResult.columns;
+   111→   111→   111→    const expectedRowCount = tc.expectedRowCount ?? solutionResult.rows.length;
+   112→   112→   112→
+   113→   113→   113→    switch (tc.type) {
+   114→   114→   114→      case 'column_match': {
+   115→   115→   115→        const match = columnsMatch(expectedCols, userResult.columns);
+   116→   116→   116→        results.push({
+   117→   117→   117→          id: tc.id,
+   118→   118→   118→          description: tc.description,
+   119→   119→   119→          type: tc.type,
+   120→   120→   120→          passed: match,
+   121→   121→   121→          message: match
+   122→   122→   122→            ? `Column names match (${userResult.columns.join(', ')})`
+   123→   123→   123→            : `Column mismatch. Expected: [${expectedCols.join(', ')}], Got: [${userResult.columns.join(', ')}]`,
+   124→   124→   124→          actual: userResult.columns,
+   125→   125→   125→          expected: expectedCols,
+   126→   126→   126→        });
+   127→   127→   127→        break;
+   128→   128→   128→      }
+   129→   129→   129→
+   130→   130→   130→      case 'column_order': {
+   131→   131→   131→        const match = columnsExactOrder(expectedCols, userResult.columns);
+   132→   132→   132→        results.push({
+   133→   133→   133→          id: tc.id,
+   134→   134→   134→          description: tc.description,
+   135→   135→   135→          type: tc.type,
+   136→   136→   136→          passed: match,
+   137→   137→   137→          message: match
+   138→   138→   138→            ? `Column order matches`
+   139→   139→   139→            : `Column order mismatch. Expected: [${expectedCols.join(', ')}], Got: [${userResult.columns.join(', ')}]`,
+   140→   140→   140→          actual: userResult.columns,
+   141→   141→   141→          expected: expectedCols,
+   142→   142→   142→        });
+   143→   143→   143→        break;
+   144→   144→   144→      }
+   145→   145→   145→
+   146→   146→   146→      case 'row_count': {
+   147→   147→   147→        const match = userResult.rows.length === expectedRowCount;
+   148→   148→   148→        results.push({
+   149→   149→   149→          id: tc.id,
+   150→   150→   150→          description: tc.description,
+   151→   151→   151→          type: tc.type,
+   152→   152→   152→          passed: match,
+   153→   153→   153→          message: match
+   154→   154→   154→            ? `Row count matches: ${userResult.rows.length}`
+   155→   155→   155→            : `Row count mismatch. Expected: ${expectedRowCount}, Got: ${userResult.rows.length}`,
+   156→   156→   156→          actual: userResult.rows.length,
+   157→   157→   157→          expected: expectedRowCount,
+   158→   158→   158→        });
+   159→   159→   159→        break;
+   160→   160→   160→      }
+   161→   161→   161→
+   162→   162→   162→      case 'exact_match': {
+   163→   163→   163→        const colsOk = columnsExactOrder(solutionResult.columns, userResult.columns);
+   164→   164→   164→        const rowsOk = rowsEqual(solutionResult.rows, userResult.rows);
+   165→   165→   165→        const match = colsOk && rowsOk;
+   166→   166→   166→        let msg = '';
+   167→   167→   167→        if (match) {
+   168→   168→   168→          msg = `Exact match! ${userResult.rows.length} rows, ${userResult.columns.length} columns`;
+   169→   169→   169→        } else if (!colsOk) {
+   170→   170→   170→          msg = `Column mismatch. Expected: [${solutionResult.columns.join(', ')}], Got: [${userResult.columns.join(', ')}]`;
+   171→   171→   171→        } else {
+   172→   172→   172→          msg = `Row data mismatch. Expected ${solutionResult.rows.length} rows, Got ${userResult.rows.length} rows`;
+   173→   173→   173→          // Find first differing row
+   174→   174→   174→          const sSorted = sortRowsForCompare(solutionResult.rows);
+   175→   175→   175→          const uSorted = sortRowsForCompare(userResult.rows);
+   176→   176→   176→          const maxCheck = Math.min(3, Math.max(sSorted.length, uSorted.length));
+   177→   177→   177→          for (let i = 0; i < maxCheck; i++) {
+   178→   178→   178→            if (!sSorted[i] || !uSorted[i]) {
+   179→   179→   179→              msg += ` | Row ${i + 1}: ${sSorted[i] ? sSorted[i].join(',') : 'missing'} vs ${uSorted[i] ? uSorted[i].join(',') : 'extra'}`;
+   180→   180→   180→            } else if (sSorted[i].join(',') !== uSorted[i].join(',')) {
+   181→   181→   181→              msg += ` | Row ${i + 1}: expected [${sSorted[i].join(', ')}], got [${uSorted[i].join(', ')}]`;
+   182→   182→   182→              break;
+   183→   183→   183→            }
+   184→   184→   184→          }
+   185→   185→   185→        }
+   186→   186→   186→        results.push({
+   187→   187→   187→          id: tc.id,
+   188→   188→   188→          description: tc.description,
+   189→   189→   189→          type: tc.type,
+   190→   190→   190→          passed: match,
+   191→   191→   191→          message: msg,
+   192→   192→   192→          actual: { columns: userResult.columns, rowCount: userResult.rows.length },
+   193→   193→   193→          expected: { columns: solutionResult.columns, rowCount: solutionResult.rows.length },
+   194→   194→   194→        });
+   195→   195→   195→        break;
+   196→   196→   196→      }
+   197→   197→   197→
+   198→   198→   198→      case 'unordered_match': {
+   199→   199→   199→        const colsOk = columnsMatch(solutionResult.columns, userResult.columns);
+   200→   200→   200→        const rowsOk = rowsEqual(solutionResult.rows, userResult.rows);
+   201→   201→   201→        const match = colsOk && rowsOk;
+   202→   202→   202→        results.push({
+   203→   203→   203→          id: tc.id,
+   204→   204→   204→          description: tc.description,
+   205→   205→   205→          type: tc.type,
+   206→   206→   206→          passed: match,
+   207→   207→   207→          message: match
+   208→   208→   208→            ? `Results match (order-independent)! ${userResult.rows.length} rows`
+   209→   209→   209→            : !colsOk
+   210→   210→   210→              ? `Column mismatch. Expected: [${solutionResult.columns.join(', ')}], Got: [${userResult.columns.join(', ')}]`
+   211→   211→   211→              : `Row data mismatch despite correct columns. Expected ${solutionResult.rows.length} rows, Got ${userResult.rows.length}`,
+   212→   212→   212→          actual: { columns: userResult.columns, rowCount: userResult.rows.length },
+   213→   213→   213→          expected: { columns: solutionResult.columns, rowCount: solutionResult.rows.length },
+   214→   214→   214→        });
+   215→   215→   215→        break;
+   216→   216→   216→      }
+   217→   217→   217→
+   218→   218→   218→      case 'not_empty': {
+   219→   219→   219→        const match = userResult.rows.length > 0 && userResult.columns.length > 0;
+   220→   220→   220→        results.push({
+   221→   221→   221→          id: tc.id,
+   222→   222→   222→          description: tc.description,
+   223→   223→   223→          type: tc.type,
+   224→   224→   224→          passed: match,
+   225→   225→   225→          message: match
+   226→   226→   226→            ? `Query returns ${userResult.rows.length} rows`
+   227→   227→   227→            : 'Query returned no results',
+   228→   228→   228→          actual: userResult.rows.length,
+   229→   229→   229→          expected: '> 0',
+   230→   230→   230→        });
+   231→   231→   231→        break;
+   232→   232→   232→      }
+   233→   233→   233→
+   234→   234→   234→      case 'sorted_order': {
+   235→   235→   235→        const sortColIdx = tc.sortColumn ?? 0;
+   236→   236→   236→        const sortDir = tc.sortDirection ?? 'ASC';
+   237→   237→   237→        let isSorted = true;
+   238→   238→   238→        if (userResult.rows.length > 1) {
+   239→   239→   239→          for (let i = 1; i < userResult.rows.length; i++) {
+   240→   240→   240→            const prev = normalizeVal(userResult.rows[i - 1][sortColIdx]);
+   241→   241→   241→            const curr = normalizeVal(userResult.rows[i][sortColIdx]);
+   242→   242→   242→            if (sortDir === 'ASC' && prev.localeCompare(curr) > 0) { isSorted = false; break; }
+   243→   243→   243→            if (sortDir === 'DESC' && prev.localeCompare(curr) < 0) { isSorted = false; break; }
+   244→   244→   244→          }
+   245→   245→   245→        }
+   246→   246→   246→        const colName = userResult.columns[sortColIdx] || `column ${sortColIdx}`;
+   247→   247→   247→        results.push({
+   248→   248→   248→          id: tc.id,
+   249→   249→   249→          description: tc.description,
+   250→   250→   250→          type: tc.type,
+   251→   251→   251→          passed: isSorted,
+   252→   252→   252→          message: isSorted
+   253→   253→   253→            ? `Results sorted by ${colName} (${sortDir})`
+   254→   254→   254→            : `Results NOT sorted by ${colName} (${sortDir})`,
+   255→   255→   255→          actual: 'See query output',
+   256→   256→   256→          expected: `Sorted ${sortDir} by ${colName}`,
+   257→   257→   257→        });
+   258→   258→   258→        break;
+   259→   259→   259→      }
+   260→   260→   260→
+   261→   261→   261→      default: {
+   262→   262→   262→        results.push({
+   263→   263→   263→          id: tc.id,
+   264→   264→   264→          description: tc.description,
+   265→   265→   265→          type: tc.type,
+   266→   266→   266→          passed: false,
+   267→   267→   267→          message: `Unknown test type: ${tc.type}`,
+   268→   268→   268→        });
+   269→   269→   269→      }
+   270→   270→   270→    }
+   271→   271→   271→  }
+   272→   272→   272→
+   273→   273→   273→  return results;
+   274→   274→   274→}
+   275→   275→   275→
+   276→   276→   276→// ─── Icons ─────────────────────────────────────────────────────
+   277→   277→   277→function BookOpen({ className }: { className?: string }) {
+   278→   278→   278→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>;
+   279→   279→   279→}
+   280→   280→   280→function Code({ className }: { className?: string }) {
+   281→   281→   281→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>;
+   282→   282→   282→}
+   283→   283→   283→function CheckCircle({ className }: { className?: string }) {
+   284→   284→   284→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>;
+   285→   285→   285→}
+   286→   286→   286→function XCircle({ className }: { className?: string }) {
+   287→   287→   287→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>;
+   288→   288→   288→}
+   289→   289→   289→function Play({ className }: { className?: string }) {
+   290→   290→   290→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>;
+   291→   291→   291→}
+   292→   292→   292→function ChevronRight({ className }: { className?: string }) {
+   293→   293→   293→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"/></svg>;
+   294→   294→   294→}
+   295→   295→   295→function ChevronDown({ className }: { className?: string }) {
+   296→   296→   296→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9"/></svg>;
+   297→   297→   297→}
+   298→   298→   298→function Menu({ className }: { className?: string }) {
+   299→   299→   299→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>;
+   300→   300→   300→}
+   301→   301→   301→function X({ className }: { className?: string }) {
+   302→   302→   302→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>;
+   303→   303→   303→}
+   304→   304→   304→function Lightbulb({ className }: { className?: string }) {
+   305→   305→   305→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M9 18h6"/><path d="M10 22h4"/><path d="M15.09 14c.18-.98.65-1.74 1.41-2.5A4.65 4.65 0 0 0 18 8 6 6 0 0 0 6 8c0 1 .23 2.23 1.5 3.5A4.61 4.61 0 0 1 8.91 14"/></svg>;
+   306→   306→   306→}
+   307→   307→   307→function AlertTriangle({ className }: { className?: string }) {
+   308→   308→   308→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>;
+   309→   309→   309→}
+   310→   310→   310→function Eye({ className }: { className?: string }) {
+   311→   311→   311→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>;
+   312→   312→   312→}
+   313→   313→   313→function EyeOff({ className }: { className?: string }) {
+   314→   314→   314→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>;
+   315→   315→   315→}
+   316→   316→   316→function Trophy({ className }: { className?: string }) {
+   317→   317→   317→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/><path d="M4 22h16"/><path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"/><path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"/><path d="M18 2H6v7a6 6 0 0 0 12 0V2Z"/></svg>;
+   318→   318→   318→}
+   319→   319→   319→function Flask({ className }: { className?: string }) {
+   320→   320→   320→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M9 3h6"/><path d="M10 9V3h4v6l5 8.5a2 2 0 0 1-1.7 3H6.7a2 2 0 0 1-1.7-3L10 9z"/></svg>;
+   321→   321→   321→}
+   322→   322→   322→function Terminal({ className }: { className?: string }) {
+   323→   323→   323→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>;
+   324→   324→   324→}
+   325→   325→   325→
+   326→   326→   326→// ─── Result Table Component ────────────────────────────────────
+   327→   327→   327→function ResultTable({ columns, rows, maxRows = 50, highlight }: { columns: string[]; rows: any[][]; maxRows?: number; highlight?: boolean }) {
+   328→   328→   328→  if (columns.length === 0 && rows.length === 0) return <div className="text-slate-500 text-sm italic p-3">Query executed successfully (no results to display)</div>;
+   329→   329→   329→  const displayRows = rows.slice(0, maxRows);
+   330→   330→   330→  return (
+   331→   331→   331→    <div className="overflow-x-auto">
+   332→   332→   332→      <table className="sql-table">
+   333→   333→   333→        <thead>
+   334→   334→   334→          <tr>{columns.map((col, i) => <th key={i}>{col}</th>)}</tr>
+   335→   335→   335→        </thead>
+   336→   336→   336→        <tbody>
+   337→   337→   337→          {displayRows.map((row, ri) => (
+   338→   338→   338→            <tr key={ri}>{row.map((cell, ci) => <td key={ci} className={highlight ? 'py-1 text-xs' : ''}>{cell === null ? <span className="text-slate-500 italic">NULL</span> : String(cell)}</td>)}</tr>
+   339→   339→   339→          ))}
+   340→   340→   340→        </tbody>
+   341→   341→   341→      </table>
+   342→   342→   342→      {rows.length > maxRows && <div className="text-xs text-slate-500 mt-1 px-2">Showing {maxRows} of {rows.length} rows</div>}
+   343→   343→   343→    </div>
+   344→   344→   344→  );
+   345→   345→   345→}
+   346→   346→   346→
+   347→   347→   347→// ─── SQL Editor Component ──────────────────────────────────────
+   348→   348→   348→function SqlEditor({ initialCode, onRun, schema, runLabel }: { initialCode: string; onRun: (result: { columns: string[]; rows: any[][]; error: string | null }, query: string) => void; schema: string; runLabel?: string }) {
+   349→   349→   349→  const [code, setCode] = useState(initialCode);
+   350→   350→   350→  const [running, setRunning] = useState(false);
+   351→   351→   351→  const textareaRef = useRef<HTMLTextAreaElement>(null);
+   352→   352→   352→
+   353→   353→   353→  useEffect(() => { setCode(initialCode); }, [initialCode]);
+   354→   354→   354→
+   355→   355→   355→  const handleRun = useCallback(async () => {
+   356→   356→   356→    setRunning(true);
+   357→   357→   357→    const result = await executeQueryApi(schema, code);
+   358→   358→   358→    onRun(result, code);
+   359→   359→   359→    setRunning(false);
+   360→   360→   360→  }, [code, schema, onRun]);
+   361→   361→   361→
+   362→   362→   362→  const handleKeyDown = (e: React.KeyboardEvent) => {
+   363→   363→   363→    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); handleRun(); }
+   364→   364→   364→    if (e.key === 'Tab') {
+   365→   365→   365→      e.preventDefault();
+   366→   366→   366→      const textarea = textareaRef.current;
+   367→   367→   367→      if (textarea) {
+   368→   368→   368→        const start = textarea.selectionStart;
+   369→   369→   369→        const end = textarea.selectionEnd;
+   370→   370→   370→        const newCode = code.substring(0, start) + '  ' + code.substring(end);
+   371→   371→   371→        setCode(newCode);
+   372→   372→   372→        setTimeout(() => { textarea.selectionStart = textarea.selectionEnd = start + 2; }, 0);
+   373→   373→   373→      }
+   374→   374→   374→    }
+   375→   375→   375→  };
+   376→   376→   376→
+   377→   377→   377→  return (
+   378→   378→   378→    <div className="relative">
+   379→   379→   379→      <textarea
+   380→   380→   380→        ref={textareaRef}
+   381→   381→   381→        value={code}
+   382→   382→   382→        onChange={(e) => setCode(e.target.value)}
+   383→   383→   383→        onKeyDown={handleKeyDown}
+   384→   384→   384→        className="w-full bg-slate-950 text-emerald-300 font-mono text-sm p-4 rounded-lg border border-slate-700 focus:border-emerald-500 focus:outline-none resize-y min-h-[120px]"
+   385→   385→   385→        placeholder="-- Write your SQL query here...&#10;SELECT * FROM employees;"
+   386→   386→   386→        spellCheck={false}
+   387→   387→   387→      />
+   388→   388→   388→      <button
+   389→   389→   389→        onClick={handleRun}
+   390→   390→   390→        disabled={running}
+   391→   391→   391→        className={cn(
+   392→   392→   392→          "absolute top-2 right-2 flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-all",
+   393→   393→   393→          !running
+   394→   394→   394→            ? "bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-900/50"
+   395→   395→   395→            : "bg-slate-700 text-slate-400 cursor-not-allowed"
+   396→   396→   396→        )}
+   397→   397→   397→      >
+   398→   398→   398→        <Play className="w-3 h-3" /> {running ? 'Running...' : runLabel || 'Run'} {!running && '(Ctrl+Enter)'}
+   399→   399→   399→      </button>
+   400→   400→   400→    </div>
+   401→   401→   401→  );
+   402→   402→   402→}
+   403→   403→   403→
+   404→   404→   404→// ─── Checkpoint Quiz ───────────────────────────────────────────
+   405→   405→   405→function CheckpointQuiz({ checkpoint, onComplete }: { checkpoint: Topic['checkpoint']; onComplete: () => void }) {
+   406→   406→   406→  const [selected, setSelected] = useState<number | null>(null);
+   407→   407→   407→  const [showResult, setShowResult] = useState(false);
+   408→   408→   408→
+   409→   409→   409→  const handleSelect = (idx: number) => {
+   410→   410→   410→    if (showResult) return;
+   411→   411→   411→    setSelected(idx);
+   412→   412→   412→    setShowResult(true);
+   413→   413→   413→    if (idx === checkpoint.answer) onComplete();
+   414→   414→   414→  };
+   415→   415→   415→
+   416→   416→   416→  return (
+   417→   417→   417→    <div className="bg-slate-800/50 rounded-xl p-5 border border-slate-700">
+   418→   418→   418→      <h4 className="text-amber-400 font-semibold mb-3 flex items-center gap-2">
+   419→   419→   419→        <Lightbulb className="w-4 h-4" /> Quick Check
+   420→   420→   420→      </h4>
+   421→   421→   421→      <p className="text-slate-200 mb-4 text-sm">{checkpoint.question}</p>
+   422→   422→   422→      <div className="space-y-2">
+   423→   423→   423→        {checkpoint.options.map((opt, i) => (
+   424→   424→   424→          <button
+   425→   425→   425→            key={i}
+   426→   426→   426→            onClick={() => handleSelect(i)}
+   427→   427→   427→            className={cn(
+   428→   428→   428→              "w-full text-left px-4 py-2.5 rounded-lg text-sm transition-all border",
+   429→   429→   429→              !showResult && "border-slate-600 hover:border-emerald-500 hover:bg-slate-700/50 text-slate-300",
+   430→   430→   430→              showResult && i === checkpoint.answer && "border-emerald-500 bg-emerald-900/30 text-emerald-300",
+   431→   431→   431→              showResult && i === selected && i !== checkpoint.answer && "border-red-500 bg-red-900/30 text-red-300",
+   432→   432→   432→              showResult && i !== selected && i !== checkpoint.answer && "border-slate-700 text-slate-500"
+   433→   433→   433→            )}
+   434→   434→   434→          >
+   435→   435→   435→            <span className="font-mono mr-2">{String.fromCharCode(65 + i)}.</span>{opt}
+   436→   436→   436→          </button>
+   437→   437→   437→        ))}
+   438→   438→   438→      </div>
+   439→   439→   439→      {showResult && (
+   440→   440→   440→        <div className={cn("mt-3 p-3 rounded-lg text-sm", selected === checkpoint.answer ? "bg-emerald-900/20 text-emerald-300" : "bg-amber-900/20 text-amber-300")}>
+   441→   441→   441→          {selected === checkpoint.answer ? "Correct! " : "Not quite. "}
+   442→   442→   442→          {checkpoint.explanation}
+   443→   443→   443→        </div>
+   444→   444→   444→      )}
+   445→   445→   445→    </div>
+   446→   446→   446→  );
+   447→   447→   447→}
+   448→   448→   448→
+   449→   449→   449→// ─── Test Case Results Panel ───────────────────────────────────
+   450→   450→   450→function TestCaseResults({ results, onShowExpected }: { results: TestCaseResult[]; onShowExpected: (result: TestCaseResult) => void }) {
+   451→   451→   451→  const passed = results.filter(r => r.passed).length;
+   452→   452→   452→  const total = results.length;
+   453→   453→   453→  const allPassed = passed === total;
+   454→   454→   454→
+   455→   455→   455→  return (
+   456→   456→   456→    <div className="bg-slate-900 rounded-xl border border-slate-700 overflow-hidden">
+   457→   457→   457→      <div className={cn(
+   458→   458→   458→        "px-4 py-2.5 border-b border-slate-700 flex items-center justify-between",
+   459→   459→   459→        allPassed ? "bg-emerald-900/20" : "bg-red-900/10"
+   460→   460→   460→      )}>
+   461→   461→   461→        <div className="flex items-center gap-2">
+   462→   462→   462→          {allPassed ? (
+   463→   463→   463→            <CheckCircle className="w-4 h-4 text-emerald-400" />
+   464→   464→   464→          ) : (
+   465→   465→   465→            <XCircle className="w-4 h-4 text-red-400" />
+   466→   466→   466→          )}
+   467→   467→   467→          <span className={cn("text-sm font-semibold", allPassed ? "text-emerald-400" : "text-red-400")}>
+   468→   468→   468→            {allPassed ? 'All Test Cases Passed!' : `${passed}/${total} Test Cases Passed`}
+   469→   469→   469→          </span>
+   470→   470→   470→        </div>
+   471→   471→   471→        <div className="flex items-center gap-1.5">
+   472→   472→   472→          <div className="w-24 bg-slate-700 rounded-full h-2">
+   473→   473→   473→            <div
+   474→   474→   474→              className={cn("rounded-full h-2 transition-all duration-500", allPassed ? "bg-emerald-500" : "bg-amber-500")}
+   475→   475→   475→              style={{ width: `${total > 0 ? (passed / total) * 100 : 0}%` }}
+   476→   476→   476→            />
+   477→   477→   477→          </div>
+   478→   478→   478→          <span className="text-xs text-slate-400">{passed}/{total}</span>
+   479→   479→   479→        </div>
+   480→   480→   480→      </div>
+   481→   481→   481→      <div className="divide-y divide-slate-800">
+   482→   482→   482→        {results.map((result, idx) => (
+   483→   483→   483→          <div key={result.id} className="px-4 py-3 hover:bg-slate-800/30 transition-colors">
+   484→   484→   484→            <div className="flex items-start gap-3">
+   485→   485→   485→              <div className="flex-shrink-0 mt-0.5">
+   486→   486→   486→                {result.passed ? (
+   487→   487→   487→                  <CheckCircle className="w-4 h-4 text-emerald-400" />
+   488→   488→   488→                ) : (
+   489→   489→   489→                  <XCircle className="w-4 h-4 text-red-400" />
+   490→   490→   490→                )}
+   491→   491→   491→              </div>
+   492→   492→   492→              <div className="flex-1 min-w-0">
+   493→   493→   493→                <div className="flex items-center gap-2 mb-1">
+   494→   494→   494→                  <span className={cn(
+   495→   495→   495→                    "text-[10px] px-1.5 py-0.5 rounded font-mono font-semibold border",
+   496→   496→   496→                    result.passed
+   497→   497→   497→                      ? "text-emerald-400 bg-emerald-900/20 border-emerald-800"
+   498→   498→   498→                      : "text-red-400 bg-red-900/20 border-red-800"
+   499→   499→   499→                  )}>
+   500→   500→   500→                    {result.type.replace('_', ' ').toUpperCase()}
+
+[showing lines 1-500 of 1182; use offset=501 with limit to continue reading]
