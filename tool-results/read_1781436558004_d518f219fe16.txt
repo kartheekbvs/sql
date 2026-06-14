@@ -1,0 +1,516 @@
+     1→     1→export interface Problem {
+     2→     2→  id: string;
+     3→     3→  title: string;
+     4→     4→  difficulty: 'Easy' | 'Medium' | 'Hard';
+     5→     5→  category: string;
+     6→     6→  description: string;
+     7→     7→  schema: string;
+     8→     8→  hint: string;
+     9→     9→  solution: string;
+    10→    10→  testCases: { query: string; expectedColumns: string[]; expectedRows: any[][]; description: string }[];
+    11→    11→}
+    12→    12→
+    13→    13→const BASE_SCHEMA = `
+    14→    14→CREATE TABLE departments (dept_id INTEGER PRIMARY KEY, dept_name TEXT NOT NULL, location TEXT, budget INTEGER);
+    15→    15→INSERT INTO departments VALUES (1, 'Engineering', 'Building A', 500000);
+    16→    16→INSERT INTO departments VALUES (2, 'Marketing', 'Building B', 200000);
+    17→    17→INSERT INTO departments VALUES (3, 'Sales', 'Building C', 300000);
+    18→    18→INSERT INTO departments VALUES (4, 'HR', 'Building A', 150000);
+    19→    19→INSERT INTO departments VALUES (5, 'Finance', 'Building D', 250000);
+    20→    20→CREATE TABLE employees (emp_id INTEGER PRIMARY KEY, name TEXT NOT NULL, dept_id INTEGER, salary INTEGER, hire_date TEXT, manager_id INTEGER, city TEXT);
+    21→    21→INSERT INTO employees VALUES (1, 'Alice', 1, 95000, '2020-01-15', NULL, 'New York');
+    22→    22→INSERT INTO employees VALUES (2, 'Bob', 1, 85000, '2020-06-01', 1, 'San Francisco');
+    23→    23→INSERT INTO employees VALUES (3, 'Charlie', 2, 70000, '2019-03-20', 1, 'New York');
+    24→    24→INSERT INTO employees VALUES (4, 'Diana', 2, 72000, '2021-09-10', 3, 'Chicago');
+    25→    25→INSERT INTO employees VALUES (5, 'Eve', 3, 65000, '2022-01-05', 1, 'Boston');
+    26→    26→INSERT INTO employees VALUES (6, 'Frank', 3, 68000, '2020-11-30', 5, 'San Francisco');
+    27→    27→INSERT INTO employees VALUES (7, 'Grace', 4, 60000, '2021-05-22', 1, 'New York');
+    28→    28→INSERT INTO employees VALUES (8, 'Henry', 5, 90000, '2019-07-01', 1, 'Chicago');
+    29→    29→INSERT INTO employees VALUES (9, 'Ivy', 1, 92000, '2022-03-15', 1, 'Boston');
+    30→    30→INSERT INTO employees VALUES (10, 'Jack', 3, 55000, '2023-01-10', 5, NULL);
+    31→    31→CREATE TABLE projects (project_id INTEGER PRIMARY KEY, project_name TEXT NOT NULL, dept_id INTEGER, start_date TEXT, end_date TEXT, status TEXT, budget INTEGER);
+    32→    32→INSERT INTO projects VALUES (1, 'Alpha', 1, '2023-01-01', '2023-06-30', 'Completed', 100000);
+    33→    33→INSERT INTO projects VALUES (2, 'Beta', 1, '2023-03-15', '2023-12-31', 'Active', 150000);
+    34→    34→INSERT INTO projects VALUES (3, 'Gamma', 2, '2023-02-01', '2023-08-30', 'Completed', 80000);
+    35→    35→INSERT INTO projects VALUES (4, 'Delta', 3, '2023-06-01', '2024-01-31', 'Active', 120000);
+    36→    36→INSERT INTO projects VALUES (5, 'Epsilon', 5, '2023-04-01', '2023-09-30', 'Completed', 90000);
+    37→    37→CREATE TABLE customers (customer_id INTEGER PRIMARY KEY, name TEXT NOT NULL, email TEXT, city TEXT, country TEXT, join_date TEXT);
+    38→    38→INSERT INTO customers VALUES (1, 'John Smith', 'john@email.com', 'New York', 'USA', '2022-01-15');
+    39→    39→INSERT INTO customers VALUES (2, 'Jane Doe', 'jane@email.com', 'London', 'UK', '2022-03-20');
+    40→    40→INSERT INTO customers VALUES (3, 'Mike Johnson', 'mike@email.com', 'Toronto', 'Canada', '2022-05-10');
+    41→    41→INSERT INTO customers VALUES (4, 'Sarah Lee', 'sarah@email.com', 'Sydney', 'Australia', '2022-07-01');
+    42→    42→INSERT INTO customers VALUES (5, 'David Chen', 'david@email.com', 'Tokyo', 'Japan', '2022-09-15');
+    43→    43→INSERT INTO customers VALUES (6, 'Emma Wilson', 'emma@email.com', 'Berlin', 'Germany', '2023-01-10');
+    44→    44→INSERT INTO customers VALUES (7, 'James Brown', 'james@email.com', 'Paris', 'France', '2023-03-25');
+    45→    45→CREATE TABLE products (product_id INTEGER PRIMARY KEY, name TEXT NOT NULL, category TEXT, price REAL, stock INTEGER, supplier TEXT);
+    46→    46→INSERT INTO products VALUES (1, 'Laptop', 'Electronics', 999.99, 50, 'TechCorp');
+    47→    47→INSERT INTO products VALUES (2, 'Phone', 'Electronics', 699.99, 100, 'TechCorp');
+    48→    48→INSERT INTO products VALUES (3, 'Desk', 'Furniture', 299.99, 30, 'FurniCo');
+    49→    49→INSERT INTO products VALUES (4, 'Chair', 'Furniture', 199.99, 60, 'FurniCo');
+    50→    50→INSERT INTO products VALUES (5, 'Book', 'Education', 29.99, 200, 'PubHouse');
+    51→    51→INSERT INTO products VALUES (6, 'Pen', 'Education', 4.99, 500, 'SupplyCo');
+    52→    52→INSERT INTO products VALUES (7, 'Monitor', 'Electronics', 399.99, 40, 'TechCorp');
+    53→    53→INSERT INTO products VALUES (8, 'Headphones', 'Electronics', 149.99, 80, 'AudioInc');
+    54→    54→CREATE TABLE orders (order_id INTEGER PRIMARY KEY, customer_id INTEGER, product_id INTEGER, quantity INTEGER, order_date TEXT, amount REAL);
+    55→    55→INSERT INTO orders VALUES (1, 1, 1, 2, '2023-01-20', 1999.98);
+    56→    56→INSERT INTO orders VALUES (2, 1, 5, 5, '2023-02-15', 149.95);
+    57→    57→INSERT INTO orders VALUES (3, 2, 2, 1, '2023-03-10', 699.99);
+    58→    58→INSERT INTO orders VALUES (4, 2, 3, 2, '2023-04-05', 599.98);
+    59→    59→INSERT INTO orders VALUES (5, 3, 1, 1, '2023-05-20', 999.99);
+    60→    60→INSERT INTO orders VALUES (6, 3, 6, 10, '2023-06-15', 49.90);
+    61→    61→INSERT INTO orders VALUES (7, 4, 8, 3, '2023-07-10', 449.97);
+    62→    62→INSERT INTO orders VALUES (8, 5, 7, 2, '2023-08-05', 799.98);
+    63→    63→INSERT INTO orders VALUES (9, 6, 4, 1, '2023-09-10', 199.99);
+    64→    64→INSERT INTO orders VALUES (10, 7, 2, 2, '2023-10-15', 1399.98);
+    65→    65→INSERT INTO orders VALUES (11, 1, 8, 1, '2023-11-20', 149.99);
+    66→    66→INSERT INTO orders VALUES (12, 3, 5, 3, '2023-12-05', 89.97);
+    67→    67→`;
+    68→    68→
+    69→    69→function P(id: string, title: string, difficulty: 'Easy' | 'Medium' | 'Hard', category: string, description: string, schema: string, hint: string, solution: string, testCases: { query: string; expectedColumns: string[]; expectedRows: any[][]; description: string }[]): Problem {
+    70→    70→  return { id, title, difficulty, category, description, schema: schema || BASE_SCHEMA, hint, solution, testCases };
+    71→    71→}
+    72→    72→
+    73→    73→export const problems: Problem[] = [
+    74→    74→  // ===== SELECT BASICS (20 problems - Easy) =====
+    75→    75→  P('P001', 'Retrieve All Columns', 'Easy', 'SELECT',
+    76→    76→    'Write a query to retrieve all columns and all rows from the employees table.',
+    77→    77→    BASE_SCHEMA, 'Use SELECT * to get all columns',
+    78→    78→    'SELECT * FROM employees;',
+    79→    79→    [{ query: 'SELECT * FROM employees;', expectedColumns: ['emp_id','name','dept_id','salary','hire_date','manager_id','city'], expectedRows: [[1,'Alice',1,95000,'2020-01-15',null,'New York'],[2,'Bob',1,85000,'2020-06-01',1,'San Francisco']], description: 'Returns all employees' }]),
+    80→    80→
+    81→    81→  P('P002', 'Select Specific Columns', 'Easy', 'SELECT',
+    82→    82→    'Write a query to retrieve only the name and salary columns from the employees table.',
+    83→    83→    BASE_SCHEMA, 'Specify column names after SELECT',
+    84→    84→    'SELECT name, salary FROM employees;',
+    85→    85→    [{ query: 'SELECT name, salary FROM employees;', expectedColumns: ['name','salary'], expectedRows: [['Alice',95000],['Bob',85000],['Charlie',70000]], description: 'Returns name and salary only' }]),
+    86→    86→
+    87→    87→  P('P003', 'Filter with WHERE', 'Easy', 'SELECT',
+    88→    88→    'Write a query to find all employees who work in department 1 (Engineering).',
+    89→    89→    BASE_SCHEMA, 'Add a WHERE clause to filter rows',
+    90→    90→    "SELECT * FROM employees WHERE dept_id = 1;",
+    91→    91→    [{ query: "SELECT name, dept_id FROM employees WHERE dept_id = 1;", expectedColumns: ['name','dept_id'], expectedRows: [['Alice',1],['Bob',1],['Ivy',1]], description: 'Only Engineering employees' }]),
+    92→    92→
+    93→    93→  P('P004', 'Multiple Conditions with AND/OR', 'Easy', 'SELECT',
+    94→    94→    'Find employees in department 1 who earn more than 90,000.',
+    95→    95→    BASE_SCHEMA, 'Combine two conditions with AND',
+    96→    96→    "SELECT * FROM employees WHERE dept_id = 1 AND salary > 90000;",
+    97→    97→    [{ query: "SELECT name, dept_id, salary FROM employees WHERE dept_id = 1 AND salary > 90000;", expectedColumns: ['name','dept_id','salary'], expectedRows: [['Alice',1,95000],['Ivy',1,92000]], description: 'Eng dept earning >90k' }]),
+    98→    98→
+    99→    99→  P('P005', 'Pattern Matching with LIKE', 'Easy', 'SELECT',
+   100→   100→    'Find all employees whose name starts with the letter "A".',
+   101→   101→    BASE_SCHEMA, "Use LIKE 'A%' to match names starting with A",
+   102→   102→    "SELECT * FROM employees WHERE name LIKE 'A%';",
+   103→   103→    [{ query: "SELECT name FROM employees WHERE name LIKE 'A%';", expectedColumns: ['name'], expectedRows: [['Alice']], description: 'Names starting with A' }]),
+   104→   104→
+   105→   105→  P('P006', 'Range Filter with BETWEEN', 'Easy', 'SELECT',
+   106→   106→    'Find employees with salaries between 65,000 and 80,000 (inclusive).',
+   107→   107→    BASE_SCHEMA, 'Use BETWEEN to filter a range',
+   108→   108→    'SELECT * FROM employees WHERE salary BETWEEN 65000 AND 80000;',
+   109→   109→    [{ query: 'SELECT name, salary FROM employees WHERE salary BETWEEN 65000 AND 80000;', expectedColumns: ['name','salary'], expectedRows: [['Eve',65000],['Frank',68000],['Charlie',70000],['Diana',72000]], description: 'Salary between 65k-80k' }]),
+   110→   110→
+   111→   111→  P('P007', 'List Filter with IN', 'Easy', 'SELECT',
+   112→   112→    "Find employees who live in New York, Chicago, or Boston.",
+   113→   113→    BASE_SCHEMA, 'Use IN to match against a list of values',
+   114→   114→    "SELECT * FROM employees WHERE city IN ('New York', 'Chicago', 'Boston');",
+   115→   115→    [{ query: "SELECT name, city FROM employees WHERE city IN ('New York', 'Chicago', 'Boston') ORDER BY name;", expectedColumns: ['name','city'], expectedRows: [['Alice','New York'],['Charlie','New York'],['Diana','Chicago'],['Eve','Boston'],['Grace','New York'],['Henry','Chicago'],['Ivy','Boston']], description: 'Employees in specified cities' }]),
+   116→   116→
+   117→   117→  P('P008', 'Handling NULL Values', 'Easy', 'SELECT',
+   118→   118→    'Find all employees who do not have a city assigned (city is NULL).',
+   119→   119→    BASE_SCHEMA, 'Use IS NULL to check for NULL values',
+   120→   120→    'SELECT * FROM employees WHERE city IS NULL;',
+   121→   121→    [{ query: 'SELECT name, city FROM employees WHERE city IS NULL;', expectedColumns: ['name','city'], expectedRows: [['Jack',null]], description: 'Employees with NULL city' }]),
+   122→   122→
+   123→   123→  P('P009', 'Sort Results with ORDER BY', 'Easy', 'SELECT',
+   124→   124→    'Retrieve all employee names and salaries, sorted by salary from highest to lowest.',
+   125→   125→    BASE_SCHEMA, 'Use ORDER BY with DESC for descending',
+   126→   126→    'SELECT name, salary FROM employees ORDER BY salary DESC;',
+   127→   127→    [{ query: 'SELECT name, salary FROM employees ORDER BY salary DESC;', expectedColumns: ['name','salary'], expectedRows: [['Alice',95000],['Henry',90000],['Ivy',92000],['Bob',85000]], description: 'Sorted by salary descending' }]),
+   128→   128→
+   129→   129→  P('P010', 'Sort by Multiple Columns', 'Easy', 'SELECT',
+   130→   130→    'Sort employees by department (ascending), then by salary (descending) within each department.',
+   131→   131→    BASE_SCHEMA, 'Use multiple columns in ORDER BY',
+   132→   132→    'SELECT name, dept_id, salary FROM employees ORDER BY dept_id ASC, salary DESC;',
+   133→   133→    [{ query: 'SELECT name, dept_id, salary FROM employees ORDER BY dept_id ASC, salary DESC LIMIT 6;', expectedColumns: ['name','dept_id','salary'], expectedRows: [['Alice',1,95000],['Ivy',1,92000],['Bob',1,85000],['Diana',2,72000],['Charlie',2,70000],['Frank',3,68000]], description: 'Sorted by dept then salary' }]),
+   134→   134→
+   135→   135→  P('P011', 'Limit Results', 'Easy', 'SELECT',
+   136→   136→    'Find the top 3 highest-paid employees.',
+   137→   137→    BASE_SCHEMA, 'Combine ORDER BY DESC with LIMIT',
+   138→   138→    'SELECT name, salary FROM employees ORDER BY salary DESC LIMIT 3;',
+   139→   139→    [{ query: 'SELECT name, salary FROM employees ORDER BY salary DESC LIMIT 3;', expectedColumns: ['name','salary'], expectedRows: [['Alice',95000],['Ivy',92000],['Henry',90000]], description: 'Top 3 earners' }]),
+   140→   140→
+   141→   141→  P('P012', 'Remove Duplicates with DISTINCT', 'Easy', 'SELECT',
+   142→   142→    'Find all unique cities where employees live.',
+   143→   143→    BASE_SCHEMA, 'Use DISTINCT to remove duplicate values',
+   144→   144→    'SELECT DISTINCT city FROM employees WHERE city IS NOT NULL;',
+   145→   145→    [{ query: 'SELECT DISTINCT city FROM employees WHERE city IS NOT NULL ORDER BY city;', expectedColumns: ['city'], expectedRows: [['Boston'],['Chicago'],['New York'],['San Francisco']], description: 'Unique non-NULL cities' }]),
+   146→   146→
+   147→   147→  P('P013', 'Column Aliases', 'Easy', 'SELECT',
+   148→   148→    'Display each employee\'s name and their annual salary (salary * 12), with the annual salary column named "annual_salary".',
+   149→   149→    BASE_SCHEMA, 'Use AS to create column aliases',
+   150→   150→    'SELECT name, salary * 12 AS annual_salary FROM employees;',
+   151→   151→    [{ query: 'SELECT name, salary * 12 AS annual_salary FROM employees LIMIT 3;', expectedColumns: ['name','annual_salary'], expectedRows: [['Alice',1140000],['Bob',1020000],['Charlie',840000]], description: 'Annual salary computed' }]),
+   152→   152→
+   153→   153→  P('P014', 'Arithmetic in SELECT', 'Easy', 'SELECT',
+   154→   154→    'For each employee, show their name and a 10% bonus calculated from their salary.',
+   155→   155→    BASE_SCHEMA, 'Multiply salary by 0.10 for the bonus',
+   156→   156→    'SELECT name, salary * 0.10 AS bonus FROM employees;',
+   157→   157→    [{ query: 'SELECT name, salary * 0.10 AS bonus FROM employees LIMIT 3;', expectedColumns: ['name','bonus'], expectedRows: [['Alice',9500],['Bob',8500],['Charlie',7000]], description: '10% bonus calculation' }]),
+   158→   158→
+   159→   159→  P('P015', 'String Concatenation', 'Easy', 'SELECT',
+   160→   160→    'Display each employee\'s name and city combined as "name - city" for employees who have a city.',
+   161→   161→    BASE_SCHEMA, 'Use || operator to concatenate strings',
+   162→   162→    "SELECT name || ' - ' || city AS info FROM employees WHERE city IS NOT NULL;",
+   163→   163→    [{ query: "SELECT name || ' - ' || city AS info FROM employees WHERE city IS NOT NULL LIMIT 3;", expectedColumns: ['info'], expectedRows: [['Alice - New York'],['Bob - San Francisco'],['Charlie - New York']], description: 'Concatenated string' }]),
+   164→   164→
+   165→   165→  P('P016', 'CASE WHEN Basics', 'Easy', 'SELECT',
+   166→   166→    'Classify employees as "High" if salary > 80000, "Medium" if salary > 60000, otherwise "Low".',
+   167→   167→    BASE_SCHEMA, 'Use CASE WHEN with multiple conditions',
+   168→   168→    "SELECT name, salary, CASE WHEN salary > 80000 THEN 'High' WHEN salary > 60000 THEN 'Medium' ELSE 'Low' END AS level FROM employees;",
+   169→   169→    [{ query: "SELECT name, CASE WHEN salary > 80000 THEN 'High' WHEN salary > 60000 THEN 'Medium' ELSE 'Low' END AS level FROM employees ORDER BY salary DESC LIMIT 4;", expectedColumns: ['name','level'], expectedRows: [['Alice','High'],['Ivy','High'],['Henry','High'],['Bob','High']], description: 'Salary classification' }]),
+   170→   170→
+   171→   171→  P('P017', 'COALESCE for NULL Handling', 'Easy', 'SELECT',
+   172→   172→    'Display each employee\'s city, but show "Remote" if the city is NULL.',
+   173→   173→    BASE_SCHEMA, 'Use COALESCE to replace NULL values',
+   174→   174→    "SELECT name, COALESCE(city, 'Remote') AS city FROM employees;",
+   175→   175→    [{ query: "SELECT name, COALESCE(city, 'Remote') AS city FROM employees WHERE city IS NULL;", expectedColumns: ['name','city'], expectedRows: [['Jack','Remote']], description: 'NULL replaced with Remote' }]),
+   176→   176→
+   177→   177→  P('P018', 'COUNT Rows', 'Easy', 'SELECT',
+   178→   178→    'Count the total number of employees in the company.',
+   179→   179→    BASE_SCHEMA, 'Use COUNT(*) to count all rows',
+   180→   180→    'SELECT COUNT(*) AS total_employees FROM employees;',
+   181→   181→    [{ query: 'SELECT COUNT(*) AS total_employees FROM employees;', expectedColumns: ['total_employees'], expectedRows: [[10]], description: 'Total employee count' }]),
+   182→   182→
+   183→   183→  P('P019', 'COUNT with Condition', 'Easy', 'SELECT',
+   184→   184→    'Count how many employees have a city value (city is not NULL).',
+   185→   185→    BASE_SCHEMA, 'COUNT(column) skips NULLs',
+   186→   186→    'SELECT COUNT(city) AS employees_with_city FROM employees;',
+   187→   187→    [{ query: 'SELECT COUNT(city) AS employees_with_city FROM employees;', expectedColumns: ['employees_with_city'], expectedRows: [[9]], description: 'Non-NULL city count' }]),
+   188→   188→
+   189→   189→  P('P020', 'COUNT DISTINCT', 'Easy', 'SELECT',
+   190→   190→    'Count how many unique departments employees belong to.',
+   191→   191→    BASE_SCHEMA, 'Use COUNT(DISTINCT column)',
+   192→   192→    'SELECT COUNT(DISTINCT dept_id) AS num_departments FROM employees;',
+   193→   193→    [{ query: 'SELECT COUNT(DISTINCT dept_id) AS num_departments FROM employees;', expectedColumns: ['num_departments'], expectedRows: [[5]], description: 'Unique department count' }]),
+   194→   194→
+   195→   195→  // ===== AGGREGATE FUNCTIONS (20 problems - Easy/Medium) =====
+   196→   196→  P('P051', 'Average Salary', 'Easy', 'Aggregates',
+   197→   197→    'Calculate the average salary of all employees.',
+   198→   198→    BASE_SCHEMA, 'Use AVG() function',
+   199→   199→    'SELECT AVG(salary) AS avg_salary FROM employees;',
+   200→   200→    [{ query: 'SELECT ROUND(AVG(salary)) AS avg_salary FROM employees;', expectedColumns: ['avg_salary'], expectedRows: [[75200]], description: 'Average salary' }]),
+   201→   201→
+   202→   202→  P('P052', 'Total Salary by Department', 'Medium', 'Aggregates',
+   203→   203→    'Find the total salary paid by each department.',
+   204→   204→    BASE_SCHEMA, 'Use SUM with GROUP BY',
+   205→   205→    'SELECT dept_id, SUM(salary) AS total_salary FROM employees GROUP BY dept_id ORDER BY dept_id;',
+   206→   206→    [{ query: 'SELECT dept_id, SUM(salary) AS total_salary FROM employees GROUP BY dept_id ORDER BY dept_id;', expectedColumns: ['dept_id','total_salary'], expectedRows: [[1,272000],[2,142000],[3,188000],[4,60000],[5,90000]], description: 'Total salary per dept' }]),
+   207→   207→
+   208→   208→  P('P053', 'Employee Count by Department', 'Easy', 'Aggregates',
+   209→   209→    'Count how many employees work in each department.',
+   210→   210→    BASE_SCHEMA, 'COUNT(*) with GROUP BY',
+   211→   211→    'SELECT dept_id, COUNT(*) AS emp_count FROM employees GROUP BY dept_id ORDER BY dept_id;',
+   212→   212→    [{ query: 'SELECT dept_id, COUNT(*) AS emp_count FROM employees GROUP BY dept_id ORDER BY dept_id;', expectedColumns: ['dept_id','emp_count'], expectedRows: [[1,3],[2,2],[3,3],[4,1],[5,1]], description: 'Employee count per dept' }]),
+   213→   213→
+   214→   214→  P('P054', 'Min and Max Salary', 'Easy', 'Aggregates',
+   215→   215→    'Find the minimum and maximum salary across all employees.',
+   216→   216→    BASE_SCHEMA, 'Use MIN() and MAX() functions',
+   217→   217→    'SELECT MIN(salary) AS min_salary, MAX(salary) AS max_salary FROM employees;',
+   218→   218→    [{ query: 'SELECT MIN(salary) AS min_salary, MAX(salary) AS max_salary FROM employees;', expectedColumns: ['min_salary','max_salary'], expectedRows: [[55000,95000]], description: 'Salary range' }]),
+   219→   219→
+   220→   220→  P('P055', 'Average Salary by Department', 'Medium', 'Aggregates',
+   221→   221→    'Find the average salary for each department, rounded to the nearest integer.',
+   222→   222→    BASE_SCHEMA, 'AVG with GROUP BY and ROUND',
+   223→   223→    'SELECT dept_id, ROUND(AVG(salary)) AS avg_salary FROM employees GROUP BY dept_id ORDER BY dept_id;',
+   224→   224→    [{ query: 'SELECT dept_id, ROUND(AVG(salary)) AS avg_salary FROM employees GROUP BY dept_id ORDER BY dept_id;', expectedColumns: ['dept_id','avg_salary'], expectedRows: [[1,90667],[2,71000],[3,62667],[4,60000],[5,90000]], description: 'Average salary per dept' }]),
+   225→   225→
+   226→   226→  // ===== GROUP BY & HAVING (20 problems - Medium) =====
+   227→   227→  P('P071', 'Departments with More Than 2 Employees', 'Medium', 'GROUP BY',
+   228→   228→    'Find departments that have more than 2 employees.',
+   229→   229→    BASE_SCHEMA, 'Use HAVING after GROUP BY to filter groups',
+   230→   230→    'SELECT dept_id, COUNT(*) AS emp_count FROM employees GROUP BY dept_id HAVING COUNT(*) > 2;',
+   231→   231→    [{ query: 'SELECT dept_id, COUNT(*) AS emp_count FROM employees GROUP BY dept_id HAVING COUNT(*) > 2;', expectedColumns: ['dept_id','emp_count'], expectedRows: [[1,3],[3,3]], description: 'Depts with >2 employees' }]),
+   232→   232→
+   233→   233→  P('P072', 'High Salary Departments', 'Medium', 'GROUP BY',
+   234→   234→    'Find departments where the average salary is above 75,000.',
+   235→   235→    BASE_SCHEMA, 'Use HAVING with AVG',
+   236→   236→    'SELECT dept_id, ROUND(AVG(salary)) AS avg_salary FROM employees GROUP BY dept_id HAVING AVG(salary) > 75000;',
+   237→   237→    [{ query: 'SELECT dept_id, ROUND(AVG(salary)) AS avg_salary FROM employees GROUP BY dept_id HAVING AVG(salary) > 75000;', expectedColumns: ['dept_id','avg_salary'], expectedRows: [[1,90667],[5,90000]], description: 'Depts with avg >75k' }]),
+   238→   238→
+   239→   239→  P('P073', 'Total Order Amount by Customer', 'Medium', 'GROUP BY',
+   240→   240→    'Calculate the total order amount for each customer.',
+   241→   241→    BASE_SCHEMA, 'SUM with GROUP BY on orders table',
+   242→   242→    'SELECT customer_id, SUM(amount) AS total_amount FROM orders GROUP BY customer_id ORDER BY customer_id;',
+   243→   243→    [{ query: 'SELECT customer_id, ROUND(SUM(amount),2) AS total_amount FROM orders GROUP BY customer_id ORDER BY customer_id;', expectedColumns: ['customer_id','total_amount'], expectedRows: [[1,2299.92],[2,1299.97],[3,1139.86],[4,449.97],[5,799.98],[6,199.99],[7,1399.98]], description: 'Total amount per customer' }]),
+   244→   244→
+   245→   245→  P('P074', 'Products with Multiple Orders', 'Medium', 'GROUP BY',
+   246→   246→    'Find products that have been ordered more than once.',
+   247→   247→    BASE_SCHEMA, 'COUNT with GROUP BY and HAVING',
+   248→   248→    'SELECT product_id, COUNT(*) AS order_count FROM orders GROUP BY product_id HAVING COUNT(*) > 1;',
+   249→   249→    [{ query: 'SELECT product_id, COUNT(*) AS order_count FROM orders GROUP BY product_id HAVING COUNT(*) > 1;', expectedColumns: ['product_id','order_count'], expectedRows: [[1,2],[2,2],[5,2]], description: 'Products ordered >1 time' }]),
+   250→   250→
+   251→   251→  P('P075', 'Department Salary Range', 'Medium', 'GROUP BY',
+   252→   252→    'For each department, find the difference between the highest and lowest salary.',
+   253→   253→    BASE_SCHEMA, 'MAX - MIN with GROUP BY',
+   254→   254→    'SELECT dept_id, MAX(salary) - MIN(salary) AS salary_range FROM employees GROUP BY dept_id ORDER BY dept_id;',
+   255→   255→    [{ query: 'SELECT dept_id, MAX(salary) - MIN(salary) AS salary_range FROM employees GROUP BY dept_id ORDER BY dept_id;', expectedColumns: ['dept_id','salary_range'], expectedRows: [[1,10000],[2,2000],[3,13000],[4,0],[5,0]], description: 'Salary range per dept' }]),
+   256→   256→
+   257→   257→  // ===== JOINS (30 problems - Medium/Hard) =====
+   258→   258→  P('P091', 'Employee Department Names', 'Medium', 'JOINs',
+   259→   259→    'List each employee\'s name along with their department name.',
+   260→   260→    BASE_SCHEMA, 'JOIN employees with departments on dept_id',
+   261→   261→    'SELECT e.name, d.dept_name FROM employees e JOIN departments d ON e.dept_id = d.dept_id;',
+   262→   262→    [{ query: 'SELECT e.name, d.dept_name FROM employees e JOIN departments d ON e.dept_id = d.dept_id ORDER BY e.name LIMIT 5;', expectedColumns: ['name','dept_name'], expectedRows: [['Alice','Engineering'],['Bob','Engineering'],['Charlie','Marketing'],['Diana','Marketing'],['Eve','Sales']], description: 'Employee with dept names' }]),
+   263→   263→
+   264→   264→  P('P092', 'Employees with Department Location', 'Medium', 'JOINs',
+   265→   265→    'Find all employees who work in "Building A".',
+   266→   266→    BASE_SCHEMA, 'JOIN and filter on department location',
+   267→   267→    "SELECT e.name, d.location FROM employees e JOIN departments d ON e.dept_id = d.dept_id WHERE d.location = 'Building A';",
+   268→   268→    [{ query: "SELECT e.name, d.location FROM employees e JOIN departments d ON e.dept_id = d.dept_id WHERE d.location = 'Building A';", expectedColumns: ['name','location'], expectedRows: [['Alice','Building A'],['Bob','Building A'],['Ivy','Building A'],['Grace','Building A']], description: 'Building A employees' }]),
+   269→   269→
+   270→   270→  P('P093', 'Department Employee Count with Names', 'Medium', 'JOINs',
+   271→   271→    'List each department name and the number of employees in it.',
+   272→   272→    BASE_SCHEMA, 'JOIN + GROUP BY + COUNT',
+   273→   273→    'SELECT d.dept_name, COUNT(*) AS emp_count FROM departments d JOIN employees e ON d.dept_id = e.dept_id GROUP BY d.dept_name ORDER BY d.dept_name;',
+   274→   274→    [{ query: 'SELECT d.dept_name, COUNT(*) AS emp_count FROM departments d JOIN employees e ON d.dept_id = e.dept_id GROUP BY d.dept_name ORDER BY d.dept_name;', expectedColumns: ['dept_name','emp_count'], expectedRows: [['Engineering',3],['Finance',1],['HR',1],['Marketing',2],['Sales',3]], description: 'Dept names with count' }]),
+   275→   275→
+   276→   276→  P('P094', 'LEFT JOIN - All Departments', 'Medium', 'JOINs',
+   277→   277→    'List ALL departments, even those with no employees. Show employee count (0 if none).',
+   278→   278→    BASE_SCHEMA, 'Use LEFT JOIN to include departments without employees',
+   279→   279→    'SELECT d.dept_name, COUNT(e.emp_id) AS emp_count FROM departments d LEFT JOIN employees e ON d.dept_id = e.dept_id GROUP BY d.dept_name ORDER BY d.dept_name;',
+   280→   280→    [{ query: 'SELECT d.dept_name, COUNT(e.emp_id) AS emp_count FROM departments d LEFT JOIN employees e ON d.dept_id = e.dept_id GROUP BY d.dept_name ORDER BY d.dept_name;', expectedColumns: ['dept_name','emp_count'], expectedRows: [['Engineering',3],['Finance',1],['HR',1],['Marketing',2],['Sales',3]], description: 'All depts with count' }]),
+   281→   281→
+   282→   282→  P('P095', 'Self Join - Employee and Manager', 'Hard', 'JOINs',
+   283→   283→    'Find each employee and their manager\'s name. Use a self-join on the employees table.',
+   284→   284→    BASE_SCHEMA, 'Join employees to itself: e.manager_id = m.emp_id',
+   285→   285→    'SELECT e.name AS employee, m.name AS manager FROM employees e LEFT JOIN employees m ON e.manager_id = m.emp_id ORDER BY e.name;',
+   286→   286→    [{ query: 'SELECT e.name AS employee, m.name AS manager FROM employees e LEFT JOIN employees m ON e.manager_id = m.emp_id ORDER BY e.name LIMIT 5;', expectedColumns: ['employee','manager'], expectedRows: [['Alice',null],['Bob','Alice'],['Charlie','Alice'],['Diana','Charlie'],['Eve','Alice']], description: 'Employee-manager pairs' }]),
+   287→   287→
+   288→   288→  P('P096', 'Three Table Join', 'Hard', 'JOINs',
+   289→   289→    'List employee names, their department name, and project names for employees who have projects.',
+   290→   290→    BASE_SCHEMA, 'Join employees → departments → projects',
+   291→   291→    'SELECT e.name, d.dept_name, p.project_name FROM employees e JOIN departments d ON e.dept_id = d.dept_id JOIN projects p ON e.dept_id = p.dept_id ORDER BY e.name, p.project_name;',
+   292→   292→    [{ query: 'SELECT e.name, d.dept_name, p.project_name FROM employees e JOIN departments d ON e.dept_id = d.dept_id JOIN projects p ON e.dept_id = p.dept_id ORDER BY e.name, p.project_name LIMIT 5;', expectedColumns: ['name','dept_name','project_name'], expectedRows: [['Alice','Engineering','Alpha'],['Alice','Engineering','Beta'],['Bob','Engineering','Alpha'],['Bob','Engineering','Beta'],['Charlie','Marketing','Gamma']], description: '3-table join result' }]),
+   293→   293→
+   294→   294→  // ===== SUBQUERIES (20 problems - Medium/Hard) =====
+   295→   295→  P('P121', 'Employees Above Average', 'Medium', 'Subqueries',
+   296→   296→    'Find employees who earn more than the company average salary.',
+   297→   297→    BASE_SCHEMA, 'Use a subquery to calculate the average',
+   298→   298→    'SELECT name, salary FROM employees WHERE salary > (SELECT AVG(salary) FROM employees) ORDER BY salary DESC;',
+   299→   299→    [{ query: 'SELECT name, salary FROM employees WHERE salary > (SELECT AVG(salary) FROM employees) ORDER BY salary DESC;', expectedColumns: ['name','salary'], expectedRows: [['Alice',95000],['Ivy',92000],['Henry',90000],['Bob',85000]], description: 'Above average earners' }]),
+   300→   300→
+   301→   301→  P('P122', 'Highest Paid in Each Department', 'Hard', 'Subqueries',
+   302→   302→    'Find the highest-paid employee in each department using a subquery.',
+   303→   303→    BASE_SCHEMA, 'Correlated subquery or GROUP BY with HAVING',
+   304→   304→    'SELECT e.name, e.dept_id, e.salary FROM employees e WHERE e.salary = (SELECT MAX(salary) FROM employees WHERE dept_id = e.dept_id) ORDER BY e.dept_id;',
+   305→   305→    [{ query: 'SELECT e.name, e.dept_id, e.salary FROM employees e WHERE e.salary = (SELECT MAX(salary) FROM employees WHERE dept_id = e.dept_id) ORDER BY e.dept_id;', expectedColumns: ['name','dept_id','salary'], expectedRows: [['Alice',1,95000],['Diana',2,72000],['Frank',3,68000],['Grace',4,60000],['Henry',5,90000]], description: 'Highest paid per dept' }]),
+   306→   306→
+   307→   307→  P('P123', 'EXISTS - Departments with Projects', 'Medium', 'Subqueries',
+   308→   308→    'Find departments that have at least one active project.',
+   309→   309→    BASE_SCHEMA, "Use EXISTS with a subquery checking projects",
+   310→   310→    "SELECT dept_name FROM departments d WHERE EXISTS (SELECT 1 FROM projects p WHERE p.dept_id = d.dept_id AND p.status = 'Active');",
+   311→   311→    [{ query: "SELECT dept_name FROM departments d WHERE EXISTS (SELECT 1 FROM projects p WHERE p.dept_id = d.dept_id AND p.status = 'Active') ORDER BY dept_name;", expectedColumns: ['dept_name'], expectedRows: [['Engineering'],['Sales']], description: 'Depts with active projects' }]),
+   312→   312→
+   313→   313→  P('P124', 'NOT EXISTS - Departments Without Projects', 'Medium', 'Subqueries',
+   314→   314→    'Find departments that have no projects at all.',
+   315→   315→    BASE_SCHEMA, 'Use NOT EXISTS with subquery',
+   316→   316→    'SELECT dept_name FROM departments d WHERE NOT EXISTS (SELECT 1 FROM projects p WHERE p.dept_id = d.dept_id);',
+   317→   317→    [{ query: 'SELECT dept_name FROM departments d WHERE NOT EXISTS (SELECT 1 FROM projects p WHERE p.dept_id = d.dept_id) ORDER BY dept_name;', expectedColumns: ['dept_name'], expectedRows: [['Finance'],['HR']], description: 'Depts without projects' }]),
+   318→   318→
+   319→   319→  // ===== WINDOW FUNCTIONS (20 problems - Medium/Hard) =====
+   320→   320→  P('P166', 'Row Number by Salary', 'Medium', 'Window Functions',
+   321→   321→    'Assign a row number to each employee ordered by salary (highest first).',
+   322→   322→    BASE_SCHEMA, 'Use ROW_NUMBER() OVER(ORDER BY salary DESC)',
+   323→   323→    'SELECT name, salary, ROW_NUMBER() OVER(ORDER BY salary DESC) AS rank FROM employees;',
+   324→   324→    [{ query: 'SELECT name, salary, ROW_NUMBER() OVER(ORDER BY salary DESC) AS rank FROM employees LIMIT 5;', expectedColumns: ['name','salary','rank'], expectedRows: [['Alice',95000,1],['Ivy',92000,2],['Henry',90000,3],['Bob',85000,4],['Diana',72000,5]], description: 'Row numbered by salary' }]),
+   325→   325→
+   326→   326→  P('P167', 'Rank by Salary within Department', 'Hard', 'Window Functions',
+   327→   327→    'Rank employees by salary within each department using DENSE_RANK().',
+   328→   328→    BASE_SCHEMA, 'DENSE_RANK() OVER(PARTITION BY dept_id ORDER BY salary DESC)',
+   329→   329→    'SELECT name, dept_id, salary, DENSE_RANK() OVER(PARTITION BY dept_id ORDER BY salary DESC) AS dept_rank FROM employees ORDER BY dept_id, dept_rank;',
+   330→   330→    [{ query: 'SELECT name, dept_id, salary, DENSE_RANK() OVER(PARTITION BY dept_id ORDER BY salary DESC) AS dept_rank FROM employees ORDER BY dept_id, dept_rank LIMIT 5;', expectedColumns: ['name','dept_id','salary','dept_rank'], expectedRows: [['Alice',1,95000,1],['Ivy',1,92000,2],['Bob',1,85000,3],['Diana',2,72000,1],['Charlie',2,70000,2]], description: 'Dense rank by dept' }]),
+   331→   331→
+   332→   332→  P('P168', 'Running Total of Salaries', 'Medium', 'Window Functions',
+   333→   333→    'Calculate a running total of salaries ordered by employee ID.',
+   334→   334→    BASE_SCHEMA, 'SUM() OVER(ORDER BY emp_id)',
+   335→   335→    'SELECT name, salary, SUM(salary) OVER(ORDER BY emp_id) AS running_total FROM employees;',
+   336→   336→    [{ query: 'SELECT name, salary, SUM(salary) OVER(ORDER BY emp_id) AS running_total FROM employees LIMIT 4;', expectedColumns: ['name','salary','running_total'], expectedRows: [['Alice',95000,95000],['Bob',85000,180000],['Charlie',70000,250000],['Diana',72000,322000]], description: 'Running total' }]),
+   337→   337→
+   338→   338→  P('P169', 'LEAD and LAG - Salary Comparison', 'Hard', 'Window Functions',
+   339→   339→    'For each employee ordered by salary, show their salary and the next higher salary.',
+   340→   340→    BASE_SCHEMA, 'Use LEAD() to peek at the next row',
+   341→   341→    'SELECT name, salary, LEAD(salary) OVER(ORDER BY salary) AS next_higher_salary FROM employees ORDER BY salary;',
+   342→   342→    [{ query: 'SELECT name, salary, LEAD(salary) OVER(ORDER BY salary) AS next_higher FROM employees ORDER BY salary LIMIT 4;', expectedColumns: ['name','salary','next_higher'], expectedRows: [['Jack',55000,60000],['Grace',60000,65000],['Eve',65000,68000],['Frank',68000,70000]], description: 'Salary comparison with LEAD' }]),
+   343→   343→
+   344→   344→  // ===== ORDER BY & LIMIT (15 problems) =====
+   345→   345→  P('P021', 'Second Highest Salary', 'Medium', 'ORDER BY',
+   346→   346→    'Find the second highest salary in the company.',
+   347→   347→    BASE_SCHEMA, 'Use ORDER BY DESC with OFFSET',
+   348→   348→    'SELECT DISTINCT salary FROM employees ORDER BY salary DESC LIMIT 1 OFFSET 1;',
+   349→   349→    [{ query: 'SELECT DISTINCT salary FROM employees ORDER BY salary DESC LIMIT 1 OFFSET 1;', expectedColumns: ['salary'], expectedRows: [[92000]], description: 'Second highest salary' }]),
+   350→   350→
+   351→   351→  P('P022', 'Nth Highest Salary', 'Hard', 'ORDER BY',
+   352→   352→    'Find the 3rd highest salary in the company.',
+   353→   353→    BASE_SCHEMA, 'Use ORDER BY DESC with OFFSET 2',
+   354→   354→    'SELECT DISTINCT salary FROM employees ORDER BY salary DESC LIMIT 1 OFFSET 2;',
+   355→   355→    [{ query: 'SELECT DISTINCT salary FROM employees ORDER BY salary DESC LIMIT 1 OFFSET 2;', expectedColumns: ['salary'], expectedRows: [[90000]], description: '3rd highest salary' }]),
+   356→   356→
+   357→   357→  P('P023', 'Most Recently Hired Employee', 'Easy', 'ORDER BY',
+   358→   358→    'Find the employee who was hired most recently.',
+   359→   359→    BASE_SCHEMA, 'ORDER BY hire_date DESC LIMIT 1',
+   360→   360→    'SELECT name, hire_date FROM employees ORDER BY hire_date DESC LIMIT 1;',
+   361→   361→    [{ query: 'SELECT name, hire_date FROM employees ORDER BY hire_date DESC LIMIT 1;', expectedColumns: ['name','hire_date'], expectedRows: [['Jack','2023-01-10']], description: 'Most recent hire' }]),
+   362→   362→
+   363→   363→  // ===== WHERE & FILTERING (15 problems) =====
+   364→   364→  P('P036', 'Employees Hired in 2020', 'Easy', 'WHERE',
+   365→   365→    'Find all employees who were hired in the year 2020.',
+   366→   366→    BASE_SCHEMA, "Filter hire_date with LIKE '2020%' or BETWEEN",
+   367→   367→    "SELECT name, hire_date FROM employees WHERE hire_date LIKE '2020%' ORDER BY hire_date;",
+   368→   368→    [{ query: "SELECT name, hire_date FROM employees WHERE hire_date >= '2020-01-01' AND hire_date < '2021-01-01' ORDER BY hire_date;", expectedColumns: ['name','hire_date'], expectedRows: [['Alice','2020-01-15'],['Bob','2020-06-01'],['Frank','2020-11-30']], description: 'Hired in 2020' }]),
+   369→   369→
+   370→   370→  P('P037', 'Employees Not in New York', 'Easy', 'WHERE',
+   371→   371→    'Find all employees whose city is not New York (and is not NULL).',
+   372→   372→    BASE_SCHEMA, "Use <> or NOT IN for exclusion",
+   373→   373→    "SELECT name, city FROM employees WHERE city <> 'New York' AND city IS NOT NULL ORDER BY name;",
+   374→   374→    [{ query: "SELECT name, city FROM employees WHERE city <> 'New York' AND city IS NOT NULL ORDER BY name;", expectedColumns: ['name','city'], expectedRows: [['Diana','Chicago'],['Eve','Boston'],['Frank','San Francisco'],['Henry','Chicago'],['Ivy','Boston']], description: 'Not in New York' }]),
+   375→   375→
+   376→   376→  P('P038', 'Salary Not Equal to Common Values', 'Easy', 'WHERE',
+   377→   377→    'Find employees whose salary is NOT 70000, 65000, or 55000.',
+   378→   378→    BASE_SCHEMA, 'Use NOT IN for exclusion list',
+   379→   379→    'SELECT name, salary FROM employees WHERE salary NOT IN (70000, 65000, 55000) ORDER BY salary DESC;',
+   380→   380→    [{ query: 'SELECT name, salary FROM employees WHERE salary NOT IN (70000, 65000, 55000) ORDER BY salary DESC;', expectedColumns: ['name','salary'], expectedRows: [['Alice',95000],['Ivy',92000],['Henry',90000],['Bob',85000],['Diana',72000],['Frank',68000],['Grace',60000]], description: 'Excluded common salaries' }]),
+   381→   381→
+   382→   382→  // ===== STRING & DATE FUNCTIONS =====
+   383→   383→  P('P186', 'UPPER and LOWER', 'Easy', 'String/Date',
+   384→   384→    'Display all employee names in uppercase and their cities in lowercase.',
+   385→   385→    BASE_SCHEMA, 'Use UPPER() and LOWER() functions',
+   386→   386→    "SELECT UPPER(name) AS name_upper, LOWER(city) AS city_lower FROM employees WHERE city IS NOT NULL LIMIT 3;",
+   387→   387→    [{ query: "SELECT UPPER(name) AS name_upper, LOWER(city) AS city_lower FROM employees WHERE city IS NOT NULL LIMIT 3;", expectedColumns: ['name_upper','city_lower'], expectedRows: [['ALICE','new york'],['BOB','san francisco'],['CHARLIE','new york']], description: 'Case conversion' }]),
+   388→   388→
+   389→   389→  P('P187', 'LENGTH of Names', 'Easy', 'String/Date',
+   390→   390→    'Find employees whose name has more than 5 characters.',
+   391→   391→    BASE_SCHEMA, 'Use LENGTH() function',
+   392→   392→    'SELECT name, LENGTH(name) AS name_length FROM employees WHERE LENGTH(name) > 5 ORDER BY name;',
+   393→   393→    [{ query: 'SELECT name, LENGTH(name) AS name_length FROM employees WHERE LENGTH(name) > 5 ORDER BY name;', expectedColumns: ['name','name_length'], expectedRows: [['Charlie',7],['Diana',5]], description: 'Names >5 chars — none qualify, so check threshold' }]),
+   394→   394→
+   395→   395→  P('P188', 'SUBSTRING from Name', 'Easy', 'String/Date',
+   396→   396→    'Display the first 3 characters of each employee\'s name.',
+   397→   397→    BASE_SCHEMA, 'Use SUBSTR() or SUBSTRING()',
+   398→   398→    "SELECT name, SUBSTR(name, 1, 3) AS short_name FROM employees ORDER BY name LIMIT 5;",
+   399→   399→    [{ query: "SELECT name, SUBSTR(name, 1, 3) AS short_name FROM employees ORDER BY name LIMIT 5;", expectedColumns: ['name','short_name'], expectedRows: [['Alice','Ali'],['Bob','Bob'],['Charlie','Cha'],['Diana','Dia'],['Eve','Eve']], description: 'First 3 chars of name' }]),
+   400→   400→
+   401→   401→  // ===== SET OPERATIONS =====
+   402→   402→  P('P156', 'UNION - All Cities', 'Medium', 'Set Operations',
+   403→   403→    'Get a combined list of all cities from both employees and customers tables (unique only).',
+   404→   404→    BASE_SCHEMA, 'Use UNION to combine and deduplicate',
+   405→   405→    "SELECT city FROM employees WHERE city IS NOT NULL UNION SELECT city FROM customers ORDER BY city;",
+   406→   406→    [{ query: "SELECT city FROM employees WHERE city IS NOT NULL UNION SELECT city FROM customers ORDER BY city;", expectedColumns: ['city'], expectedRows: [['Berlin'],['Boston'],['Chicago'],['London'],['New York'],['Paris'],['San Francisco'],['Sydney'],['Tokyo'],['Toronto']], description: 'Combined unique cities' }]),
+   407→   407→
+   408→   408→  // ===== ADVANCED =====
+   409→   409→  P('P201', 'Department Salary Comparison', 'Hard', 'Advanced',
+   410→   410→    'Find employees who earn more than the average salary of their own department.',
+   411→   411→    BASE_SCHEMA, 'Correlated subquery comparing to department average',
+   412→   412→    'SELECT e.name, e.dept_id, e.salary FROM employees e WHERE e.salary > (SELECT AVG(salary) FROM employees WHERE dept_id = e.dept_id) ORDER BY e.dept_id, e.salary DESC;',
+   413→   413→    [{ query: 'SELECT e.name, e.dept_id, e.salary FROM employees e WHERE e.salary > (SELECT AVG(salary) FROM employees WHERE dept_id = e.dept_id) ORDER BY e.dept_id, e.salary DESC;', expectedColumns: ['name','dept_id','salary'], expectedRows: [['Alice',1,95000],['Ivy',1,92000],['Diana',2,72000],['Frank',3,68000],['Henry',5,90000]], description: 'Above dept average' }]),
+   414→   414→
+   415→   415→  P('P202', 'Top Earner Per Department', 'Hard', 'Advanced',
+   416→   416→    'Find the highest-paid employee in each department using a window function.',
+   417→   417→    BASE_SCHEMA, 'Use ROW_NUMBER with PARTITION BY',
+   418→   418→    'SELECT name, dept_id, salary FROM (SELECT name, dept_id, salary, ROW_NUMBER() OVER(PARTITION BY dept_id ORDER BY salary DESC) AS rn FROM employees) WHERE rn = 1 ORDER BY dept_id;',
+   419→   419→    [{ query: 'SELECT name, dept_id, salary FROM (SELECT name, dept_id, salary, ROW_NUMBER() OVER(PARTITION BY dept_id ORDER BY salary DESC) AS rn FROM employees) WHERE rn = 1 ORDER BY dept_id;', expectedColumns: ['name','dept_id','salary'], expectedRows: [['Alice',1,95000],['Diana',2,72000],['Frank',3,68000],['Grace',4,60000],['Henry',5,90000]], description: 'Top earner per dept' }]),
+   420→   420→
+   421→   421→  P('P203', 'Cumulative Revenue', 'Hard', 'Advanced',
+   422→   422→    'Calculate the cumulative (running) total of order amounts ordered by date.',
+   423→   423→    BASE_SCHEMA, 'SUM() OVER(ORDER BY) window function',
+   424→   424→    'SELECT order_date, amount, SUM(amount) OVER(ORDER BY order_date) AS cumulative FROM orders ORDER BY order_date;',
+   425→   425→    [{ query: 'SELECT order_date, ROUND(amount,2) AS amount, ROUND(SUM(amount) OVER(ORDER BY order_date),2) AS cumulative FROM orders ORDER BY order_date LIMIT 4;', expectedColumns: ['order_date','amount','cumulative'], expectedRows: [['2023-01-20',1999.98,1999.98],['2023-02-15',149.95,2149.93],['2023-03-10',699.99,2849.92],['2023-04-05',599.98,3449.9]], description: 'Cumulative revenue' }]),
+   426→   426→
+   427→   427→  P('P204', 'Customers with No Orders', 'Medium', 'Advanced',
+   428→   428→    'Find customers who have never placed an order.',
+   429→   429→    BASE_SCHEMA, 'LEFT JOIN with NULL check or NOT EXISTS',
+   430→   430→    'SELECT c.name FROM customers c LEFT JOIN orders o ON c.customer_id = o.customer_id WHERE o.order_id IS NULL;',
+   431→   431→    [{ query: 'SELECT c.name FROM customers c LEFT JOIN orders o ON c.customer_id = o.customer_id WHERE o.order_id IS NULL;', expectedColumns: ['name'], expectedRows: [], description: 'All customers have orders in our data' }]),
+   432→   432→
+   433→   433→  P('P205', 'Salary Percentile with NTILE', 'Hard', 'Advanced',
+   434→   434→    'Divide employees into 4 salary quartiles using NTILE.',
+   435→   435→    BASE_SCHEMA, 'NTILE(4) OVER(ORDER BY salary DESC)',
+   436→   436→    'SELECT name, salary, NTILE(4) OVER(ORDER BY salary DESC) AS quartile FROM employees ORDER BY salary DESC;',
+   437→   437→    [{ query: 'SELECT name, salary, NTILE(4) OVER(ORDER BY salary DESC) AS quartile FROM employees ORDER BY salary DESC;', expectedColumns: ['name','salary','quartile'], expectedRows: [['Alice',95000,1],['Ivy',92000,1],['Henry',90000,1],['Bob',85000,2],['Diana',72000,2],['Charlie',70000,2],['Frank',68000,3],['Eve',65000,3],['Grace',60000,4],['Jack',55000,4]], description: 'Salary quartiles' }]),
+   438→   438→
+   439→   439→  P('P206', 'Month-over-Month Order Growth', 'Hard', 'Advanced',
+   440→   440→    'Calculate the total order amount per month and the difference from the previous month.',
+   441→   441→    BASE_SCHEMA, 'Use LAG window function after aggregation',
+   442→   442→    "SELECT month, total, total - LAG(total) OVER(ORDER BY month) AS diff FROM (SELECT SUBSTR(order_date,1,7) AS month, SUM(amount) AS total FROM orders GROUP BY SUBSTR(order_date,1,7)) ORDER BY month;",
+   443→   443→    [{ query: "SELECT month, ROUND(total,2) AS total FROM (SELECT SUBSTR(order_date,1,7) AS month, SUM(amount) AS total FROM orders GROUP BY SUBSTR(order_date,1,7)) ORDER BY month LIMIT 4;", expectedColumns: ['month','total'], expectedRows: [['2023-01',1999.98],['2023-02',149.95],['2023-03',699.99],['2023-04',599.98]], description: 'Monthly totals' }]),
+   444→   444→
+   445→   445→  P('P207', 'Conditional Aggregation', 'Medium', 'Advanced',
+   446→   446→    'For each department, count how many employees earn above 70,000 and how many below or equal.',
+   447→   447→    BASE_SCHEMA, 'Use SUM(CASE WHEN...) for conditional counting',
+   448→   448→    "SELECT dept_id, SUM(CASE WHEN salary > 70000 THEN 1 ELSE 0 END) AS high_earners, SUM(CASE WHEN salary <= 70000 THEN 1 ELSE 0 END) AS low_earners FROM employees GROUP BY dept_id ORDER BY dept_id;",
+   449→   449→    [{ query: "SELECT dept_id, SUM(CASE WHEN salary > 70000 THEN 1 ELSE 0 END) AS high_earners, SUM(CASE WHEN salary <= 70000 THEN 1 ELSE 0 END) AS low_earners FROM employees GROUP BY dept_id ORDER BY dept_id;", expectedColumns: ['dept_id','high_earners','low_earners'], expectedRows: [[1,3,0],[2,1,1],[3,0,3],[4,0,1],[5,1,0]], description: 'Conditional count per dept' }]),
+   450→   450→
+   451→   451→  P('P208', 'Find Median Salary', 'Hard', 'Advanced',
+   452→   452→    'Find the median salary of all employees.',
+   453→   453→    BASE_SCHEMA, 'Use NTILE or ROW_NUMBER in subquery',
+   454→   454→    'SELECT AVG(salary) AS median_salary FROM (SELECT salary, ROW_NUMBER() OVER(ORDER BY salary) AS rn, COUNT(*) OVER() AS cnt FROM employees) WHERE rn IN (cnt/2, cnt/2+1);',
+   455→   455→    [{ query: 'SELECT AVG(salary) AS median_salary FROM (SELECT salary, ROW_NUMBER() OVER(ORDER BY salary) AS rn, COUNT(*) OVER() AS cnt FROM employees) WHERE rn IN (cnt/2, cnt/2+1);', expectedColumns: ['median_salary'], expectedRows: [[69000.0]], description: 'Median salary' }]),
+   456→   456→
+   457→   457→  P('P209', 'Department Budget Utilization', 'Hard', 'Advanced',
+   458→   458→    'Calculate what percentage of each department\'s budget is spent on salaries.',
+   459→   459→    BASE_SCHEMA, 'Join with departments, compute salary/budget * 100',
+   460→   460→    "SELECT d.dept_name, d.budget, SUM(e.salary) AS total_salary, ROUND(SUM(e.salary) * 100.0 / d.budget, 1) AS pct_used FROM departments d JOIN employees e ON d.dept_id = e.dept_id GROUP BY d.dept_name, d.budget ORDER BY pct_used DESC;",
+   461→   461→    [{ query: "SELECT d.dept_name, ROUND(SUM(e.salary) * 100.0 / d.budget, 1) AS pct_used FROM departments d JOIN employees e ON d.dept_id = e.dept_id GROUP BY d.dept_name, d.budget ORDER BY pct_used DESC;", expectedColumns: ['dept_name','pct_used'], expectedRows: [['HR',40.0],['Engineering',54.4],['Marketing',71.0],['Sales',62.7],['Finance',36.0]], description: 'Budget utilization' }]),
+   462→   462→
+   463→   463→  P('P210', 'Find Consecutive Orders', 'Hard', 'Advanced',
+   464→   464→    'Find customers who placed orders in consecutive months (using LAG/LEAD).',
+   465→   465→    BASE_SCHEMA, 'Use LAG to compare dates, then GROUP BY customer having consecutive',
+   466→   466→    "SELECT DISTINCT customer_id FROM (SELECT customer_id, SUBSTR(order_date,1,7) AS month, LAG(SUBSTR(order_date,1,7)) OVER(PARTITION BY customer_id ORDER BY order_date) AS prev_month FROM orders) WHERE prev_month IS NOT NULL LIMIT 5;",
+   467→   467→    [{ query: "SELECT DISTINCT o.customer_id FROM orders o JOIN orders o2 ON o.customer_id = o2.customer_id AND o.order_id <> o2.order_id LIMIT 3;", expectedColumns: ['customer_id'], expectedRows: [[1],[2],[3]], description: 'Customers with multiple orders' }]),
+   468→   468→
+   469→   469→  P('P211', 'Product Revenue Ranking', 'Medium', 'Advanced',
+   470→   470→    'Rank products by total revenue (quantity * price), showing product name and total revenue.',
+   471→   471→    BASE_SCHEMA, 'JOIN orders with products, SUM quantity*price, use RANK()',
+   472→   472→    "SELECT p.name AS product, ROUND(SUM(o.quantity * p.price),2) AS revenue, RANK() OVER(ORDER BY SUM(o.quantity * p.price) DESC) AS revenue_rank FROM orders o JOIN products p ON o.product_id = p.product_id GROUP BY p.name ORDER BY revenue DESC;",
+   473→   473→    [{ query: "SELECT p.name AS product, ROUND(SUM(o.quantity * p.price),2) AS revenue FROM orders o JOIN products p ON o.product_id = p.product_id GROUP BY p.name ORDER BY revenue DESC LIMIT 4;", expectedColumns: ['product','revenue'], expectedRows: [['Laptop',2999.97],['Phone',2799.96],['Desk',599.98],['Headphones',599.96]], description: 'Product revenue ranking' }]),
+   474→   474→
+   475→   475→  P('P212', 'Year-over-Year Hiring', 'Medium', 'Advanced',
+   476→   476→    'Count the number of employees hired each year.',
+   477→   477→    BASE_SCHEMA, "SUBSTR or LIKE to extract year, GROUP BY year",
+   478→   478→    "SELECT SUBSTR(hire_date,1,4) AS year, COUNT(*) AS hires FROM employees GROUP BY SUBSTR(hire_date,1,4) ORDER BY year;",
+   479→   479→    [{ query: "SELECT SUBSTR(hire_date,1,4) AS year, COUNT(*) AS hires FROM employees GROUP BY SUBSTR(hire_date,1,4) ORDER BY year;", expectedColumns: ['year','hires'], expectedRows: [['2019',2],['2020',3],['2021',2],['2022',2],['2023',1]], description: 'Hires per year' }]),
+   480→   480→
+   481→   481→  P('P213', 'Cross-Department Salary Comparison', 'Hard', 'Advanced',
+   482→   482→    'Find employees whose salary is above the overall average AND above their department average.',
+   483→   483→    BASE_SCHEMA, 'Two subqueries: one for overall avg, one for dept avg',
+   484→   484→    'SELECT e.name, e.dept_id, e.salary FROM employees e WHERE e.salary > (SELECT AVG(salary) FROM employees) AND e.salary > (SELECT AVG(salary) FROM employees WHERE dept_id = e.dept_id) ORDER BY e.salary DESC;',
+   485→   485→    [{ query: 'SELECT e.name, e.dept_id, e.salary FROM employees e WHERE e.salary > (SELECT AVG(salary) FROM employees) AND e.salary > (SELECT AVG(salary) FROM employees WHERE dept_id = e.dept_id) ORDER BY e.salary DESC;', expectedColumns: ['name','dept_id','salary'], expectedRows: [['Alice',1,95000],['Ivy',1,92000]], description: 'Above both averages' }]),
+   486→   486→
+   487→   487→  P('P214', 'Employee Salary Grade Distribution', 'Medium', 'Advanced',
+   488→   488→    'Create a salary grade distribution: count employees in each salary range (0-50k, 50-70k, 70-90k, 90k+).',
+   489→   489→    BASE_SCHEMA, 'CASE WHEN with GROUP BY',
+   490→   490→    "SELECT CASE WHEN salary < 50000 THEN '0-50k' WHEN salary < 70000 THEN '50-70k' WHEN salary < 90000 THEN '70-90k' ELSE '90k+' END AS grade, COUNT(*) AS count FROM employees GROUP BY CASE WHEN salary < 50000 THEN '0-50k' WHEN salary < 70000 THEN '50-70k' WHEN salary < 90000 THEN '70-90k' ELSE '90k+' END ORDER BY count DESC;",
+   491→   491→    [{ query: "SELECT CASE WHEN salary < 60000 THEN 'Low' WHEN salary < 80000 THEN 'Mid' ELSE 'High' END AS grade, COUNT(*) AS count FROM employees GROUP BY grade ORDER BY count DESC;", expectedColumns: ['grade','count'], expectedRows: [['High',4],['Mid',4],['Low',2]], description: 'Salary grade distribution' }]),
+   492→   492→
+   493→   493→  P('P215', 'Project Budget vs Salary Spend', 'Hard', 'Advanced',
+   494→   494→    'For each department with projects, compare total project budget vs total salary spend.',
+   495→   495→    BASE_SCHEMA, 'JOIN departments, projects, employees; compare sums',
+   496→   496→    "SELECT d.dept_name, SUM(DISTINCT p.budget) AS project_budget, SUM(e.salary) AS salary_spend FROM departments d JOIN projects p ON d.dept_id = p.dept_id JOIN employees e ON d.dept_id = e.dept_id GROUP BY d.dept_name ORDER BY d.dept_name;",
+   497→   497→    [{ query: "SELECT d.dept_name, SUM(p.budget) AS project_budget FROM departments d JOIN projects p ON d.dept_id = p.dept_id GROUP BY d.dept_name ORDER BY d.dept_name;", expectedColumns: ['dept_name','project_budget'], expectedRows: [['Engineering',250000],['Marketing',80000],['Sales',120000],['Finance',90000]], description: 'Project budgets per dept' }]),
+   498→   498→];
+   499→   499→
+   500→   500→export const PROBLEM_CATEGORIES = [
+   501→   501→  'all', 'SELECT', 'ORDER BY', 'WHERE', 'Aggregates', 'GROUP BY',
+   502→   502→  'JOINs', 'Subqueries', 'Window Functions', 'Set Operations',
+   503→   503→  'String/Date', 'Advanced'
+   504→   504→];
+   505→   505→
+   506→   506→export function getProblem(id: string): Problem | undefined {
+   507→   507→  return problems.find(p => p.id === id);
+   508→   508→}
+   509→   509→
+   510→   510→export function getFilteredProblems(filter: 'all' | 'Easy' | 'Medium' | 'Hard', category: string): Problem[] {
+   511→   511→  let filtered = problems;
+   512→   512→  if (filter !== 'all') filtered = filtered.filter(p => p.difficulty === filter);
+   513→   513→  if (category !== 'all') filtered = filtered.filter(p => p.category === category);
+   514→   514→  return filtered;
+   515→   515→}
+   516→   516→

@@ -1,0 +1,745 @@
+     1→     1→'use client';
+     2→     2→
+     3→     3→import { useState, useEffect, useRef, useCallback } from 'react';
+     4→     4→import { phases, Phase, Topic } from '../lib/curriculum';
+     5→     5→import { problems, Problem } from '../lib/problems';
+     6→     6→import { useLearningStore } from '../lib/store';
+     7→     7→import { cn } from '../lib/utils';
+     8→     8→
+     9→     9→// ─── SQL.js Compiler ───────────────────────────────────────────
+    10→    10→type SqlJsDb = {
+    11→    11→  run: (sql: string) => { columns: string[]; values: any[][] };
+    12→    12→  exec: (sql: string) => { columns: string[]; values: any[][] }[];
+    13→    13→  close: () => void;
+    14→    14→};
+    15→    15→
+    16→    16→let sqljsModule: any = null;
+    17→    17→
+    18→    18→async function initSqlJs(): Promise<any> {
+    19→    19→  if (sqljsModule) return sqljsModule;
+    20→    20→  const SQL = await import('sql.js');
+    21→    21→  const module = await (SQL as any).default({
+    22→    22→    locateFile: (file: string) => `https://sql.js.org/dist/${file}`,
+    23→    23→  });
+    24→    24→  sqljsModule = module;
+    25→    25→  return module;
+    26→    26→}
+    27→    27→
+    28→    28→function createDb(SQL: any, schema: string): SqlJsDb {
+    29→    29→  const db = new SQL.Database();
+    30→    30→  db.run(schema);
+    31→    31→  return {
+    32→    32→    run: (sql: string) => {
+    33→    33→      try {
+    34→    34→        const result = db.exec(sql);
+    35→    35→        if (result.length > 0) return { columns: result[0].columns, values: result[0].values };
+    36→    36→        return { columns: [], values: [] };
+    37→    37→      } catch (e: any) {
+    38→    38→        throw new Error(e.message);
+    39→    39→      }
+    40→    40→    },
+    41→    41→    exec: (sql: string) => {
+    42→    42→      try { return db.exec(sql); } catch (e: any) { throw new Error(e.message); }
+    43→    43→    },
+    44→    44→    close: () => db.close(),
+    45→    45→  };
+    46→    46→}
+    47→    47→
+    48→    48→function executeQuery(SQL: any, schema: string, query: string): { columns: string[]; rows: any[][]; error: string | null } {
+    49→    49→  try {
+    50→    50→    const db = createDb(SQL, schema);
+    51→    51→    const result = db.run(query);
+    52→    52→    db.close();
+    53→    53→    return { columns: result.columns, rows: result.values, error: null };
+    54→    54→  } catch (e: any) {
+    55→    55→    return { columns: [], rows: [], error: e.message };
+    56→    56→  }
+    57→    57→}
+    58→    58→
+    59→    59→// ─── Icons ─────────────────────────────────────────────────────
+    60→    60→function BookOpen({ className }: { className?: string }) {
+    61→    61→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>;
+    62→    62→}
+    63→    63→function Code({ className }: { className?: string }) {
+    64→    64→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>;
+    65→    65→}
+    66→    66→function CheckCircle({ className }: { className?: string }) {
+    67→    67→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>;
+    68→    68→}
+    69→    69→function Play({ className }: { className?: string }) {
+    70→    70→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>;
+    71→    71→}
+    72→    72→function ChevronRight({ className }: { className?: string }) {
+    73→    73→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"/></svg>;
+    74→    74→}
+    75→    75→function ChevronDown({ className }: { className?: string }) {
+    76→    76→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9"/></svg>;
+    77→    77→}
+    78→    78→function Menu({ className }: { className?: string }) {
+    79→    79→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>;
+    80→    80→}
+    81→    81→function X({ className }: { className?: string }) {
+    82→    82→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>;
+    83→    83→}
+    84→    84→function Lightbulb({ className }: { className?: string }) {
+    85→    85→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M9 18h6"/><path d="M10 22h4"/><path d="M15.09 14c.18-.98.65-1.74 1.41-2.5A4.65 4.65 0 0 0 18 8 6 6 0 0 0 6 8c0 1 .23 2.23 1.5 3.5A4.61 4.61 0 0 1 8.91 14"/></svg>;
+    86→    86→}
+    87→    87→function AlertTriangle({ className }: { className?: string }) {
+    88→    88→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>;
+    89→    89→}
+    90→    90→function Eye({ className }: { className?: string }) {
+    91→    91→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>;
+    92→    92→}
+    93→    93→function EyeOff({ className }: { className?: string }) {
+    94→    94→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>;
+    95→    95→}
+    96→    96→function Trophy({ className }: { className?: string }) {
+    97→    97→  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/><path d="M4 22h16"/><path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"/><path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"/><path d="M18 2H6v7a6 6 0 0 0 12 0V2Z"/></svg>;
+    98→    98→}
+    99→    99→
+   100→   100→// ─── Result Table Component ────────────────────────────────────
+   101→   101→function ResultTable({ columns, rows, maxRows = 50 }: { columns: string[]; rows: any[][]; maxRows?: number }) {
+   102→   102→  if (columns.length === 0 && rows.length === 0) return <div className="text-slate-500 text-sm italic p-3">Query executed successfully (no results to display)</div>;
+   103→   103→  const displayRows = rows.slice(0, maxRows);
+   104→   104→  return (
+   105→   105→    <div className="overflow-x-auto">
+   106→   106→      <table className="sql-table">
+   107→   107→        <thead>
+   108→   108→          <tr>{columns.map((col, i) => <th key={i}>{col}</th>)}</tr>
+   109→   109→        </thead>
+   110→   110→        <tbody>
+   111→   111→          {displayRows.map((row, ri) => (
+   112→   112→            <tr key={ri}>{row.map((cell, ci) => <td key={ci}>{cell === null ? <span className="text-slate-500 italic">NULL</span> : String(cell)}</td>)}</tr>
+   113→   113→          ))}
+   114→   114→        </tbody>
+   115→   115→      </table>
+   116→   116→      {rows.length > maxRows && <div className="text-xs text-slate-500 mt-1 px-2">Showing {maxRows} of {rows.length} rows</div>}
+   117→   117→    </div>
+   118→   118→  );
+   119→   119→}
+   120→   120→
+   121→   121→// ─── SQL Editor Component ──────────────────────────────────────
+   122→   122→function SqlEditor({ initialCode, onRun, schema, sqlReady, SQL }: { initialCode: string; onRun: (result: { columns: string[]; rows: any[][]; error: string | null }) => void; schema: string; sqlReady: boolean; SQL: any }) {
+   123→   123→  const [code, setCode] = useState(initialCode);
+   124→   124→  const textareaRef = useRef<HTMLTextAreaElement>(null);
+   125→   125→
+   126→   126→  useEffect(() => { setCode(initialCode); }, [initialCode]);
+   127→   127→
+   128→   128→  const handleRun = useCallback(() => {
+   129→   129→    if (!sqlReady || !SQL) return;
+   130→   130→    const result = executeQuery(SQL, schema, code);
+   131→   131→    onRun(result);
+   132→   132→  }, [code, schema, sqlReady, SQL, onRun]);
+   133→   133→
+   134→   134→  const handleKeyDown = (e: React.KeyboardEvent) => {
+   135→   135→    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); handleRun(); }
+   136→   136→    if (e.key === 'Tab') {
+   137→   137→      e.preventDefault();
+   138→   138→      const textarea = textareaRef.current;
+   139→   139→      if (textarea) {
+   140→   140→        const start = textarea.selectionStart;
+   141→   141→        const end = textarea.selectionEnd;
+   142→   142→        const newCode = code.substring(0, start) + '  ' + code.substring(end);
+   143→   143→        setCode(newCode);
+   144→   144→        setTimeout(() => { textarea.selectionStart = textarea.selectionEnd = start + 2; }, 0);
+   145→   145→      }
+   146→   146→    }
+   147→   147→  };
+   148→   148→
+   149→   149→  return (
+   150→   150→    <div className="relative">
+   151→   151→      <textarea
+   152→   152→        ref={textareaRef}
+   153→   153→        value={code}
+   154→   154→        onChange={(e) => setCode(e.target.value)}
+   155→   155→        onKeyDown={handleKeyDown}
+   156→   156→        className="w-full bg-slate-950 text-emerald-300 font-mono text-sm p-4 rounded-lg border border-slate-700 focus:border-emerald-500 focus:outline-none resize-y min-h-[120px]"
+   157→   157→        placeholder="-- Write your SQL query here...&#10;SELECT * FROM employees;"
+   158→   158→        spellCheck={false}
+   159→   159→      />
+   160→   160→      <button
+   161→   161→        onClick={handleRun}
+   162→   162→        disabled={!sqlReady}
+   163→   163→        className={cn(
+   164→   164→          "absolute top-2 right-2 flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-all",
+   165→   165→          sqlReady
+   166→   166→            ? "bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-900/50"
+   167→   167→            : "bg-slate-700 text-slate-400 cursor-not-allowed"
+   168→   168→        )}
+   169→   169→      >
+   170→   170→        <Play className="w-3 h-3" /> Run {sqlReady ? '(Ctrl+Enter)' : 'Loading...'}
+   171→   171→      </button>
+   172→   172→    </div>
+   173→   173→  );
+   174→   174→}
+   175→   175→
+   176→   176→// ─── Checkpoint Quiz ───────────────────────────────────────────
+   177→   177→function CheckpointQuiz({ checkpoint, onComplete }: { checkpoint: Topic['checkpoint']; onComplete: () => void }) {
+   178→   178→  const [selected, setSelected] = useState<number | null>(null);
+   179→   179→  const [showResult, setShowResult] = useState(false);
+   180→   180→
+   181→   181→  const handleSelect = (idx: number) => {
+   182→   182→    if (showResult) return;
+   183→   183→    setSelected(idx);
+   184→   184→    setShowResult(true);
+   185→   185→    if (idx === checkpoint.answer) onComplete();
+   186→   186→  };
+   187→   187→
+   188→   188→  return (
+   189→   189→    <div className="bg-slate-800/50 rounded-xl p-5 border border-slate-700">
+   190→   190→      <h4 className="text-amber-400 font-semibold mb-3 flex items-center gap-2">
+   191→   191→        <Lightbulb className="w-4 h-4" /> Quick Check
+   192→   192→      </h4>
+   193→   193→      <p className="text-slate-200 mb-4 text-sm">{checkpoint.question}</p>
+   194→   194→      <div className="space-y-2">
+   195→   195→        {checkpoint.options.map((opt, i) => (
+   196→   196→          <button
+   197→   197→            key={i}
+   198→   198→            onClick={() => handleSelect(i)}
+   199→   199→            className={cn(
+   200→   200→              "w-full text-left px-4 py-2.5 rounded-lg text-sm transition-all border",
+   201→   201→              !showResult && "border-slate-600 hover:border-emerald-500 hover:bg-slate-700/50 text-slate-300",
+   202→   202→              showResult && i === checkpoint.answer && "border-emerald-500 bg-emerald-900/30 text-emerald-300",
+   203→   203→              showResult && i === selected && i !== checkpoint.answer && "border-red-500 bg-red-900/30 text-red-300",
+   204→   204→              showResult && i !== selected && i !== checkpoint.answer && "border-slate-700 text-slate-500"
+   205→   205→            )}
+   206→   206→          >
+   207→   207→            <span className="font-mono mr-2">{String.fromCharCode(65 + i)}.</span>{opt}
+   208→   208→          </button>
+   209→   209→        ))}
+   210→   210→      </div>
+   211→   211→      {showResult && (
+   212→   212→        <div className={cn("mt-3 p-3 rounded-lg text-sm", selected === checkpoint.answer ? "bg-emerald-900/20 text-emerald-300" : "bg-amber-900/20 text-amber-300")}>
+   213→   213→          {selected === checkpoint.answer ? "✓ Correct! " : "✗ Not quite. "}
+   214→   214→          {checkpoint.explanation}
+   215→   215→        </div>
+   216→   216→      )}
+   217→   217→    </div>
+   218→   218→  );
+   219→   219→}
+   220→   220→
+   221→   221→// ─── Learn Mode ────────────────────────────────────────────────
+   222→   222→function LearnMode({ SQL, sqlReady }: { SQL: any; sqlReady: boolean }) {
+   223→   223→  const { currentTopicId, setCurrentTopic, completedTopics, toggleComplete, isCompleted } = useLearningStore();
+   224→   224→  const [expandedPhase, setExpandedPhase] = useState<string>('1');
+   225→   225→  const [queryResult, setQueryResult] = useState<{ columns: string[]; rows: any[][]; error: string | null } | null>(null);
+   226→   226→  const [activeSection, setActiveSection] = useState<'story' | 'steps' | 'code' | 'syntax' | 'mistakes' | 'quiz'>('story');
+   227→   227→  const { sidebarOpen, setSidebarOpen } = useLearningStore();
+   228→   228→
+   229→   229→  const currentTopic = phases.flatMap(p => p.topics).find(t => t.id === currentTopicId) || phases[0].topics[0];
+   230→   230→
+   231→   231→  const allTopics = phases.flatMap(p => p.topics);
+   232→   232→  const currentIdx = allTopics.findIndex(t => t.id === currentTopic.id);
+   233→   233→  const prevTopic = currentIdx > 0 ? allTopics[currentIdx - 1] : null;
+   234→   234→  const nextTopic = currentIdx < allTopics.length - 1 ? allTopics[currentIdx + 1] : null;
+   235→   235→
+   236→   236→  const completedCount = completedTopics.length;
+   237→   237→  const totalCount = allTopics.length;
+   238→   238→
+   239→   239→  useEffect(() => { setQueryResult(null); setActiveSection('story'); }, [currentTopicId]);
+   240→   240→
+   241→   241→  const handleQueryResult = useCallback((result: { columns: string[]; rows: any[][]; error: string | null }) => {
+   242→   242→    setQueryResult(result);
+   243→   243→  }, []);
+   244→   244→
+   245→   245→  const sections = [
+   246→   246→    { id: 'story' as const, label: 'Concept', icon: <BookOpen className="w-3.5 h-3.5" /> },
+   247→   247→    { id: 'steps' as const, label: 'Step-by-Step', icon: <Code className="w-3.5 h-3.5" /> },
+   248→   248→    { id: 'code' as const, label: 'Try It', icon: <Play className="w-3.5 h-3.5" /> },
+   249→   249→    { id: 'syntax' as const, label: 'Syntax', icon: <BookOpen className="w-3.5 h-3.5" /> },
+   250→   250→    { id: 'mistakes' as const, label: 'Pitfalls', icon: <AlertTriangle className="w-3.5 h-3.5" /> },
+   251→   251→    { id: 'quiz' as const, label: 'Quiz', icon: <CheckCircle className="w-3.5 h-3.5" /> },
+   252→   252→  ];
+   253→   253→
+   254→   254→  return (
+   255→   255→    <div className="flex h-[calc(100vh-3.5rem)]">
+   256→   256→      {/* Sidebar */}
+   257→   257→      <div className={cn(
+   258→   258→        "fixed inset-y-0 left-0 z-40 w-72 bg-slate-900 border-r border-slate-800 transform transition-transform duration-200 lg:relative lg:translate-x-0",
+   259→   259→        sidebarOpen ? "translate-x-0" : "-translate-x-full"
+   260→   260→      )}>
+   261→   261→        <div className="flex items-center justify-between p-4 border-b border-slate-800">
+   262→   262→          <div className="flex items-center gap-2">
+   263→   263→            <span className="text-lg">🗃️</span>
+   264→   264→            <span className="font-bold text-emerald-400">SQL Mastery</span>
+   265→   265→          </div>
+   266→   266→          <button onClick={() => setSidebarOpen(false)} className="lg:hidden text-slate-400 hover:text-white"><X className="w-5 h-5" /></button>
+   267→   267→        </div>
+   268→   268→
+   269→   269→        {/* Progress */}
+   270→   270→        <div className="px-4 py-3 border-b border-slate-800">
+   271→   271→          <div className="flex justify-between text-xs text-slate-400 mb-1.5">
+   272→   272→            <span>Progress</span>
+   273→   273→            <span>{completedCount}/{totalCount} topics</span>
+   274→   274→          </div>
+   275→   275→          <div className="w-full bg-slate-700 rounded-full h-2">
+   276→   276→            <div className="bg-emerald-500 rounded-full h-2 transition-all duration-500" style={{ width: `${totalCount > 0 ? (completedCount / totalCount) * 100 : 0}%` }} />
+   277→   277→          </div>
+   278→   278→        </div>
+   279→   279→
+   280→   280→        {/* Topics */}
+   281→   281→        <div className="overflow-y-auto flex-1 p-2" style={{ maxHeight: 'calc(100vh - 10rem)' }}>
+   282→   282→          {phases.map(phase => (
+   283→   283→            <div key={phase.id} className="mb-1">
+   284→   284→              <button
+   285→   285→                onClick={() => setExpandedPhase(expandedPhase === phase.id ? '' : phase.id)}
+   286→   286→                className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-slate-300 hover:bg-slate-800 transition-colors"
+   287→   287→              >
+   288→   288→                <span>{phase.icon}</span>
+   289→   289→                <span className="flex-1 text-left">{phase.title}</span>
+   290→   290→                {expandedPhase === phase.id ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+   291→   291→              </button>
+   292→   292→              {expandedPhase === phase.id && (
+   293→   293→                <div className="ml-4 space-y-0.5 animate-fade-in">
+   294→   294→                  {phase.topics.map(topic => (
+   295→   295→                    <button
+   296→   296→                      key={topic.id}
+   297→   297→                      onClick={() => { setCurrentTopic(topic.id); setSidebarOpen(false); }}
+   298→   298→                      className={cn(
+   299→   299→                        "w-full flex items-center gap-2 px-3 py-2 rounded-md text-xs transition-all text-left",
+   300→   300→                        currentTopicId === topic.id ? "bg-emerald-900/40 text-emerald-300 border border-emerald-800" : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
+   301→   301→                      )}
+   302→   302→                    >
+   303→   303→                      {isCompleted(topic.id) ? <CheckCircle className="w-3.5 h-3.5 text-emerald-500 flex-shrink-0" /> : <div className="w-3.5 h-3.5 rounded-full border border-slate-600 flex-shrink-0" />}
+   304→   304→                      <span className="truncate">{topic.id} — {topic.title}</span>
+   305→   305→                    </button>
+   306→   306→                  ))}
+   307→   307→                </div>
+   308→   308→              )}
+   309→   309→            </div>
+   310→   310→          ))}
+   311→   311→        </div>
+   312→   312→      </div>
+   313→   313→
+   314→   314→      {/* Overlay for mobile sidebar */}
+   315→   315→      {sidebarOpen && <div className="fixed inset-0 z-30 bg-black/50 lg:hidden" onClick={() => setSidebarOpen(false)} />}
+   316→   316→
+   317→   317→      {/* Main Content */}
+   318→   318→      <div className="flex-1 overflow-y-auto">
+   319→   319→        {/* Top bar */}
+   320→   320→        <div className="sticky top-0 z-10 bg-slate-950/90 backdrop-blur-sm border-b border-slate-800 px-4 py-2.5 flex items-center gap-3">
+   321→   321→          <button onClick={() => setSidebarOpen(true)} className="lg:hidden text-slate-400 hover:text-white"><Menu className="w-5 h-5" /></button>
+   322→   322→          <div className="flex-1 min-w-0">
+   323→   323→            <h2 className="text-sm font-semibold text-slate-200 truncate">{currentTopic.id} — {currentTopic.title}</h2>
+   324→   324→          </div>
+   325→   325→          <button
+   326→   326→            onClick={() => toggleComplete(currentTopic.id)}
+   327→   327→            className={cn(
+   328→   328→              "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all",
+   329→   329→              isCompleted(currentTopic.id) ? "bg-emerald-900/40 text-emerald-400 border border-emerald-800" : "bg-slate-800 text-slate-400 hover:text-slate-200 border border-slate-700"
+   330→   330→            )}
+   331→   331→          >
+   332→   332→            <CheckCircle className="w-3.5 h-3.5" />
+   333→   333→            {isCompleted(currentTopic.id) ? 'Completed' : 'Mark Done'}
+   334→   334→          </button>
+   335→   335→        </div>
+   336→   336→
+   337→   337→        {/* Section tabs */}
+   338→   338→        <div className="border-b border-slate-800 px-4 flex gap-1 overflow-x-auto">
+   339→   339→          {sections.map(s => (
+   340→   340→            <button
+   341→   341→              key={s.id}
+   342→   342→              onClick={() => setActiveSection(s.id)}
+   343→   343→              className={cn(
+   344→   344→                "flex items-center gap-1.5 px-3 py-2.5 text-xs font-medium border-b-2 transition-all whitespace-nowrap",
+   345→   345→                activeSection === s.id ? "border-emerald-500 text-emerald-400" : "border-transparent text-slate-500 hover:text-slate-300"
+   346→   346→              )}
+   347→   347→            >
+   348→   348→              {s.icon} {s.label}
+   349→   349→            </button>
+   350→   350→          ))}
+   351→   351→        </div>
+   352→   352→
+   353→   353→        {/* Content */}
+   354→   354→        <div className="p-4 max-w-4xl mx-auto animate-fade-in">
+   355→   355→          {/* Concept */}
+   356→   356→          {activeSection === 'story' && (
+   357→   357→            <div className="space-y-6">
+   358→   358→              <div className="whitespace-pre-line text-slate-300 leading-relaxed text-sm">{currentTopic.story}</div>
+   359→   359→              <div className="bg-slate-900 rounded-xl p-4 border border-slate-700">
+   360→   360→                <h4 className="text-xs font-semibold text-slate-400 mb-2 uppercase tracking-wider">Visual</h4>
+   361→   361→                <pre className="text-emerald-300/80 text-xs leading-relaxed overflow-x-auto">{currentTopic.tableViz}</pre>
+   362→   362→              </div>
+   363→   363→              <div className="flex flex-wrap gap-2">
+   364→   364→                {currentTopic.subtopics.map(st => (
+   365→   365→                  <span key={st} className="px-2.5 py-1 rounded-full text-xs bg-slate-800 text-slate-400 border border-slate-700">{st}</span>
+   366→   366→                ))}
+   367→   367→              </div>
+   368→   368→            </div>
+   369→   369→          )}
+   370→   370→
+   371→   371→          {/* Step-by-step */}
+   372→   372→          {activeSection === 'steps' && (
+   373→   373→            <div className="space-y-4">
+   374→   374→              <h3 className="text-sm font-semibold text-slate-200">Step-by-Step Breakdown</h3>
+   375→   375→              {currentTopic.stepByStep.map((step, i) => (
+   376→   376→                <div key={i} className="bg-slate-900 rounded-xl p-4 border border-slate-700">
+   377→   377→                  <div className="flex items-start gap-3">
+   378→   378→                    <span className="flex-shrink-0 w-6 h-6 rounded-full bg-emerald-900/50 text-emerald-400 flex items-center justify-center text-xs font-bold">{i + 1}</span>
+   379→   379→                    <div className="flex-1 space-y-2">
+   380→   380→                      <code className="text-amber-300 text-sm font-mono block bg-slate-950 px-3 py-2 rounded-md">{step.line}</code>
+   381→   381→                      <p className="text-slate-300 text-sm">{step.explanation}</p>
+   382→   382→                      <p className="text-emerald-400/80 text-xs font-medium">Result: {step.result}</p>
+   383→   383→                    </div>
+   384→   384→                  </div>
+   385→   385→                </div>
+   386→   386→              ))}
+   387→   387→            </div>
+   388→   388→          )}
+   389→   389→
+   390→   390→          {/* Try It (Code) */}
+   391→   391→          {activeSection === 'code' && (
+   392→   392→            <div className="space-y-4">
+   393→   393→              <div className="flex items-center justify-between">
+   394→   394→                <h3 className="text-sm font-semibold text-slate-200">SQL Playground</h3>
+   395→   395→                <span className="text-xs text-slate-500">Ctrl+Enter to run</span>
+   396→   396→              </div>
+   397→   397→              <SqlEditor
+   398→   398→                initialCode={currentTopic.code}
+   399→   399→                onRun={handleQueryResult}
+   400→   400→                schema={currentTopic.schema}
+   401→   401→                sqlReady={sqlReady}
+   402→   402→                SQL={SQL}
+   403→   403→              />
+   404→   404→              {queryResult && (
+   405→   405→                <div className="bg-slate-900 rounded-xl border border-slate-700 overflow-hidden">
+   406→   406→                  <div className="px-4 py-2 border-b border-slate-700 flex items-center gap-2">
+   407→   407→                    {queryResult.error ? (
+   408→   408→                      <span className="text-red-400 text-xs font-semibold">Error</span>
+   409→   409→                    ) : (
+   410→   410→                      <span className="text-emerald-400 text-xs font-semibold">Result ({queryResult.rows.length} rows)</span>
+   411→   411→                    )}
+   412→   412→                  </div>
+   413→   413→                  {queryResult.error ? (
+   414→   414→                    <div className="p-4 text-red-400 text-sm font-mono">{queryResult.error}</div>
+   415→   415→                  ) : (
+   416→   416→                    <ResultTable columns={queryResult.columns} rows={queryResult.rows} />
+   417→   417→                  )}
+   418→   418→                </div>
+   419→   419→              )}
+   420→   420→            </div>
+   421→   421→          )}
+   422→   422→
+   423→   423→          {/* Syntax Card */}
+   424→   424→          {activeSection === 'syntax' && (
+   425→   425→            <div className="space-y-4">
+   426→   426→              <div className="bg-slate-900 rounded-xl p-5 border border-emerald-900/30">
+   427→   427→                <h4 className="text-emerald-400 font-semibold text-sm mb-3">{currentTopic.syntaxCard.title}</h4>
+   428→   428→                <pre className="text-amber-300/90 text-sm leading-relaxed overflow-x-auto whitespace-pre-wrap">{currentTopic.syntaxCard.content}</pre>
+   429→   429→              </div>
+   430→   430→            </div>
+   431→   431→          )}
+   432→   432→
+   433→   433→          {/* Common Mistakes */}
+   434→   434→          {activeSection === 'mistakes' && (
+   435→   435→            <div className="space-y-4">
+   436→   436→              <h3 className="text-sm font-semibold text-slate-200">Common Mistakes to Avoid</h3>
+   437→   437→              {currentTopic.mistakes.map((m, i) => (
+   438→   438→                <div key={i} className="bg-slate-900 rounded-xl p-4 border border-red-900/20">
+   439→   439→                  <div className="space-y-3">
+   440→   440→                    <div className="flex items-start gap-2">
+   441→   441→                      <span className="text-red-400 text-xs font-bold mt-0.5">WRONG</span>
+   442→   442→                      <code className="text-red-300/80 text-sm font-mono flex-1">{m.wrong}</code>
+   443→   443→                    </div>
+   444→   444→                    <div className="flex items-start gap-2">
+   445→   445→                      <span className="text-emerald-400 text-xs font-bold mt-0.5">RIGHT</span>
+   446→   446→                      <code className="text-emerald-300/80 text-sm font-mono flex-1">{m.correct}</code>
+   447→   447→                    </div>
+   448→   448→                    <p className="text-slate-400 text-xs pl-12">{m.explanation}</p>
+   449→   449→                  </div>
+   450→   450→                </div>
+   451→   451→              ))}
+   452→   452→            </div>
+   453→   453→          )}
+   454→   454→
+   455→   455→          {/* Quiz */}
+   456→   456→          {activeSection === 'quiz' && (
+   457→   457→            <CheckpointQuiz
+   458→   458→              checkpoint={currentTopic.checkpoint}
+   459→   459→              onComplete={() => {
+   460→   460→                if (!isCompleted(currentTopic.id)) toggleComplete(currentTopic.id);
+   461→   461→              }}
+   462→   462→            />
+   463→   463→          )}
+   464→   464→
+   465→   465→          {/* Navigation */}
+   466→   466→          <div className="flex justify-between items-center mt-8 pt-4 border-t border-slate-800">
+   467→   467→            {prevTopic ? (
+   468→   468→              <button
+   469→   469→                onClick={() => setCurrentTopic(prevTopic.id)}
+   470→   470→                className="flex items-center gap-1 text-xs text-slate-400 hover:text-emerald-400 transition-colors"
+   471→   471→              >
+   472→   472→                <ChevronRight className="w-3 h-3 rotate-180" /> {prevTopic.id} {prevTopic.title}
+   473→   473→              </button>
+   474→   474→            ) : <div />}
+   475→   475→            {nextTopic ? (
+   476→   476→              <button
+   477→   477→                onClick={() => setCurrentTopic(nextTopic.id)}
+   478→   478→                className="flex items-center gap-1 text-xs text-slate-400 hover:text-emerald-400 transition-colors"
+   479→   479→              >
+   480→   480→                {nextTopic.id} {nextTopic.title} <ChevronRight className="w-3 h-3" />
+   481→   481→              </button>
+   482→   482→            ) : <div />}
+   483→   483→          </div>
+   484→   484→        </div>
+   485→   485→      </div>
+   486→   486→    </div>
+   487→   487→  );
+   488→   488→}
+   489→   489→
+   490→   490→// ─── Practice Mode ─────────────────────────────────────────────
+   491→   491→function PracticeMode({ SQL, sqlReady }: { SQL: any; sqlReady: boolean }) {
+   492→   492→  const { practiceFilter, setPracticeFilter, practiceCategory, setPracticeCategory, completedProblems, toggleProblemComplete, isProblemCompleted, currentProblemId, setCurrentProblem } = useLearningStore();
+   493→   493→  const [queryResult, setQueryResult] = useState<{ columns: string[]; rows: any[][]; error: string | null } | null>(null);
+   494→   494→  const [showHint, setShowHint] = useState(false);
+   495→   495→  const [showSolution, setShowSolution] = useState(false);
+   496→   496→  const [solved, setSolved] = useState(false);
+   497→   497→  const { sidebarOpen, setSidebarOpen } = useLearningStore();
+   498→   498→
+   499→   499→  const categories = ['all', ...Array.from(new Set(problems.map(p => p.category)))];
+   500→   500→  const filteredProblems = problems.filter(p => {
+   501→   501→    if (practiceFilter !== 'all' && p.difficulty !== practiceFilter) return false;
+   502→   502→    if (practiceCategory !== 'all' && p.category !== practiceCategory) return false;
+   503→   503→    return true;
+   504→   504→  });
+   505→   505→
+   506→   506→  const currentProblem = currentProblemId ? problems.find(p => p.id === currentProblemId) : null;
+   507→   507→  const completedCount = completedProblems.length;
+   508→   508→
+   509→   509→  useEffect(() => { setQueryResult(null); setShowHint(false); setShowSolution(false); setSolved(false); }, [currentProblemId]);
+   510→   510→
+   511→   511→  const handleQueryResult = useCallback((result: { columns: string[]; rows: any[][]; error: string | null }) => {
+   512→   512→    setQueryResult(result);
+   513→   513→    if (!result.error && currentProblem) {
+   514→   514→      // Simple check: if query runs without error, consider it a pass
+   515→   515→      setSolved(true);
+   516→   516→      if (!isProblemCompleted(currentProblem.id)) toggleProblemComplete(currentProblem.id);
+   517→   517→    }
+   518→   518→  }, [currentProblem, isProblemCompleted, toggleProblemComplete]);
+   519→   519→
+   520→   520→  const difficultyColor = (d: string) => d === 'Easy' ? 'text-emerald-400 bg-emerald-900/20 border-emerald-800' : d === 'Medium' ? 'text-amber-400 bg-amber-900/20 border-amber-800' : 'text-red-400 bg-red-900/20 border-red-800';
+   521→   521→
+   522→   522→  return (
+   523→   523→    <div className="flex h-[calc(100vh-3.5rem)]">
+   524→   524→      {/* Sidebar */}
+   525→   525→      <div className={cn(
+   526→   526→        "fixed inset-y-0 left-0 z-40 w-72 bg-slate-900 border-r border-slate-800 transform transition-transform duration-200 lg:relative lg:translate-x-0",
+   527→   527→        sidebarOpen ? "translate-x-0" : "-translate-x-full"
+   528→   528→      )}>
+   529→   529→        <div className="flex items-center justify-between p-4 border-b border-slate-800">
+   530→   530→          <div className="flex items-center gap-2">
+   531→   531→            <Trophy className="w-5 h-5 text-amber-400" />
+   532→   532→            <span className="font-bold text-amber-400">Practice</span>
+   533→   533→          </div>
+   534→   534→          <button onClick={() => setSidebarOpen(false)} className="lg:hidden text-slate-400 hover:text-white"><X className="w-5 h-5" /></button>
+   535→   535→        </div>
+   536→   536→
+   537→   537→        {/* Progress & Filters */}
+   538→   538→        <div className="px-4 py-3 border-b border-slate-800 space-y-3">
+   539→   539→          <div className="flex justify-between text-xs text-slate-400">
+   540→   540→            <span>Solved</span>
+   541→   541→            <span>{completedCount}/{problems.length} problems</span>
+   542→   542→          </div>
+   543→   543→          <div className="w-full bg-slate-700 rounded-full h-2">
+   544→   544→            <div className="bg-amber-500 rounded-full h-2 transition-all duration-500" style={{ width: `${(completedCount / problems.length) * 100}%` }} />
+   545→   545→          </div>
+   546→   546→          <div className="flex gap-1 flex-wrap">
+   547→   547→            {(['all', 'Easy', 'Medium', 'Hard'] as const).map(f => (
+   548→   548→              <button
+   549→   549→                key={f}
+   550→   550→                onClick={() => setPracticeFilter(f)}
+   551→   551→                className={cn(
+   552→   552→                  "px-2.5 py-1 rounded-md text-xs font-medium transition-all",
+   553→   553→                  practiceFilter === f ? "bg-slate-700 text-white" : "text-slate-500 hover:text-slate-300"
+   554→   554→                )}
+   555→   555→              >{f === 'all' ? 'All' : f}</button>
+   556→   556→            ))}
+   557→   557→          </div>
+   558→   558→          <select
+   559→   559→            value={practiceCategory}
+   560→   560→            onChange={(e) => setPracticeCategory(e.target.value)}
+   561→   561→            className="w-full bg-slate-800 text-slate-300 text-xs rounded-lg px-3 py-2 border border-slate-700 focus:border-amber-500 focus:outline-none"
+   562→   562→          >
+   563→   563→            {categories.map(c => <option key={c} value={c}>{c === 'all' ? 'All Categories' : c}</option>)}
+   564→   564→          </select>
+   565→   565→        </div>
+   566→   566→
+   567→   567→        {/* Problem List */}
+   568→   568→        <div className="overflow-y-auto flex-1 p-2" style={{ maxHeight: 'calc(100vh - 16rem)' }}>
+   569→   569→          {filteredProblems.map(p => (
+   570→   570→            <button
+   571→   571→              key={p.id}
+   572→   572→              onClick={() => { setCurrentProblem(p.id); setSidebarOpen(false); }}
+   573→   573→              className={cn(
+   574→   574→                "w-full flex items-center gap-2 px-3 py-2 rounded-md text-xs transition-all text-left mb-0.5",
+   575→   575→                currentProblemId === p.id ? "bg-amber-900/30 text-amber-300 border border-amber-800" : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
+   576→   576→              )}
+   577→   577→            >
+   578→   578→              {isProblemCompleted(p.id) ? <CheckCircle className="w-3.5 h-3.5 text-emerald-500 flex-shrink-0" /> : <div className="w-3.5 h-3.5 rounded-full border border-slate-600 flex-shrink-0" />}
+   579→   579→              <span className="flex-1 truncate">{p.id}. {p.title}</span>
+   580→   580→              <span className={cn("text-[10px] px-1.5 py-0.5 rounded border flex-shrink-0", difficultyColor(p.difficulty))}>{p.difficulty}</span>
+   581→   581→            </button>
+   582→   582→          ))}
+   583→   583→          {filteredProblems.length === 0 && <div className="text-slate-500 text-xs text-center py-4">No problems match your filters</div>}
+   584→   584→        </div>
+   585→   585→      </div>
+   586→   586→
+   587→   587→      {sidebarOpen && <div className="fixed inset-0 z-30 bg-black/50 lg:hidden" onClick={() => setSidebarOpen(false)} />}
+   588→   588→
+   589→   589→      {/* Main Content */}
+   590→   590→      <div className="flex-1 overflow-y-auto">
+   591→   591→        {currentProblem ? (
+   592→   592→          <>
+   593→   593→            <div className="sticky top-0 z-10 bg-slate-950/90 backdrop-blur-sm border-b border-slate-800 px-4 py-2.5 flex items-center gap-3">
+   594→   594→              <button onClick={() => setSidebarOpen(true)} className="lg:hidden text-slate-400 hover:text-white"><Menu className="w-5 h-5" /></button>
+   595→   595→              <span className={cn("text-[10px] px-2 py-1 rounded border font-semibold", difficultyColor(currentProblem.difficulty))}>{currentProblem.difficulty}</span>
+   596→   596→              <span className="text-xs text-slate-500 bg-slate-800 px-2 py-1 rounded">{currentProblem.category}</span>
+   597→   597→              <h2 className="text-sm font-semibold text-slate-200 flex-1 truncate">{currentProblem.id}. {currentProblem.title}</h2>
+   598→   598→              {solved && <span className="text-emerald-400 text-xs font-semibold flex items-center gap-1"><CheckCircle className="w-3.5 h-3.5" /> Solved!</span>}
+   599→   599→            </div>
+   600→   600→
+   601→   601→            <div className="p-4 max-w-4xl mx-auto space-y-4 animate-fade-in">
+   602→   602→              {/* Problem Description */}
+   603→   603→              <div className="bg-slate-900 rounded-xl p-5 border border-slate-700">
+   604→   604→                <p className="text-slate-200 text-sm leading-relaxed">{currentProblem.description}</p>
+   605→   605→              </div>
+   606→   606→
+   607→   607→              {/* SQL Editor */}
+   608→   608→              <SqlEditor
+   609→   609→                initialCode={`-- Write your solution here\n`}
+   610→   610→                onRun={handleQueryResult}
+   611→   611→                schema={currentProblem.schema}
+   612→   612→                sqlReady={sqlReady}
+   613→   613→                SQL={SQL}
+   614→   614→              />
+   615→   615→
+   616→   616→              {/* Query Result */}
+   617→   617→              {queryResult && (
+   618→   618→                <div className="bg-slate-900 rounded-xl border border-slate-700 overflow-hidden">
+   619→   619→                  <div className="px-4 py-2 border-b border-slate-700 flex items-center gap-2">
+   620→   620→                    {queryResult.error ? (
+   621→   621→                      <span className="text-red-400 text-xs font-semibold">Error</span>
+   622→   622→                    ) : (
+   623→   623→                      <span className="text-emerald-400 text-xs font-semibold">Result ({queryResult.rows.length} rows)</span>
+   624→   624→                    )}
+   625→   625→                  </div>
+   626→   626→                  {queryResult.error ? (
+   627→   627→                    <div className="p-4 text-red-400 text-sm font-mono">{queryResult.error}</div>
+   628→   628→                  ) : (
+   629→   629→                    <ResultTable columns={queryResult.columns} rows={queryResult.rows} />
+   630→   630→                  )}
+   631→   631→                </div>
+   632→   632→              )}
+   633→   633→
+   634→   634→              {/* Hint & Solution */}
+   635→   635→              <div className="flex gap-2">
+   636→   636→                <button
+   637→   637→                  onClick={() => setShowHint(!showHint)}
+   638→   638→                  className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium bg-amber-900/20 text-amber-400 border border-amber-800 hover:bg-amber-900/30 transition-colors"
+   639→   639→                >
+   640→   640→                  <Lightbulb className="w-3.5 h-3.5" /> {showHint ? 'Hide Hint' : 'Show Hint'}
+   641→   641→                </button>
+   642→   642→                <button
+   643→   643→                  onClick={() => setShowSolution(!showSolution)}
+   644→   644→                  className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium bg-slate-800 text-slate-400 border border-slate-700 hover:text-slate-200 transition-colors"
+   645→   645→                >
+   646→   646→                  {showSolution ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />} {showSolution ? 'Hide Solution' : 'Show Solution'}
+   647→   647→                </button>
+   648→   648→              </div>
+   649→   649→
+   650→   650→              {showHint && (
+   651→   651→                <div className="bg-amber-900/10 rounded-xl p-4 border border-amber-800/30 animate-fade-in">
+   652→   652→                  <p className="text-amber-300 text-sm"><Lightbulb className="w-4 h-4 inline mr-2" />{currentProblem.hint}</p>
+   653→   653→                </div>
+   654→   654→              )}
+   655→   655→
+   656→   656→              {showSolution && (
+   657→   657→                <div className="bg-slate-900 rounded-xl p-4 border border-emerald-900/30 animate-fade-in">
+   658→   658→                  <h4 className="text-emerald-400 text-xs font-semibold mb-2">Solution</h4>
+   659→   659→                  <pre className="text-emerald-300/90 text-sm overflow-x-auto">{currentProblem.solution}</pre>
+   660→   660→                </div>
+   661→   661→              )}
+   662→   662→            </div>
+   663→   663→          </>
+   664→   664→        ) : (
+   665→   665→          <div className="flex flex-col items-center justify-center h-full text-center px-4">
+   666→   666→            <Trophy className="w-16 h-16 text-amber-500/30 mb-4" />
+   667→   667→            <h2 className="text-xl font-bold text-slate-300 mb-2">Ready to Practice?</h2>
+   668→   668→            <p className="text-slate-500 text-sm mb-6 max-w-md">Select a problem from the sidebar to start solving. Filter by difficulty and category to find problems that match your skill level.</p>
+   669→   669→            <button onClick={() => setSidebarOpen(true)} className="lg:hidden px-4 py-2 rounded-lg bg-amber-600 text-white text-sm font-medium hover:bg-amber-500 transition-colors">
+   670→   670→              Browse Problems
+   671→   671→            </button>
+   672→   672→          </div>
+   673→   673→        )}
+   674→   674→      </div>
+   675→   675→    </div>
+   676→   676→  );
+   677→   677→}
+   678→   678→
+   679→   679→// ─── Main App ──────────────────────────────────────────────────
+   680→   680→export default function Home() {
+   681→   681→  const [SQL, setSQL] = useState<any>(null);
+   682→   682→  const [sqlReady, setSqlReady] = useState(false);
+   683→   683→  const [sqlLoading, setSqlLoading] = useState(true);
+   684→   684→  const { mode, setMode } = useLearningStore();
+   685→   685→
+   686→   686→  useEffect(() => {
+   687→   687→    initSqlJs()
+   688→   688→      .then((module) => { setSQL(module); setSqlReady(true); setSqlLoading(false); })
+   689→   689→      .catch((err) => { console.error('Failed to load SQL.js:', err); setSqlLoading(false); });
+   690→   690→  }, []);
+   691→   691→
+   692→   692→  return (
+   693→   693→    <div className="min-h-screen bg-slate-950 text-slate-100">
+   694→   694→      {/* Header */}
+   695→   695→      <header className="sticky top-0 z-50 bg-slate-950/95 backdrop-blur-sm border-b border-slate-800">
+   696→   696→        <div className="flex items-center justify-between px-4 h-14">
+   697→   697→          <div className="flex items-center gap-3">
+   698→   698→            <span className="text-2xl">🗃️</span>
+   699→   699→            <div>
+   700→   700→              <h1 className="text-sm font-bold text-white leading-none">SQL Mastery</h1>
+   701→   701→              <p className="text-[10px] text-slate-500 leading-none mt-0.5">Zero to Placement Ready</p>
+   702→   702→            </div>
+   703→   703→          </div>
+   704→   704→
+   705→   705→          {/* Mode Toggle */}
+   706→   706→          <div className="flex items-center bg-slate-900 rounded-lg p-0.5 border border-slate-800">
+   707→   707→            <button
+   708→   708→              onClick={() => setMode('learn')}
+   709→   709→              className={cn(
+   710→   710→                "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all",
+   711→   711→                mode === 'learn' ? "bg-emerald-600 text-white shadow-lg" : "text-slate-400 hover:text-slate-200"
+   712→   712→              )}
+   713→   713→            >
+   714→   714→              <BookOpen className="w-3.5 h-3.5" /> Learn
+   715→   715→            </button>
+   716→   716→            <button
+   717→   717→              onClick={() => setMode('practice')}
+   718→   718→              className={cn(
+   719→   719→                "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all",
+   720→   720→                mode === 'practice' ? "bg-amber-600 text-white shadow-lg" : "text-slate-400 hover:text-slate-200"
+   721→   721→              )}
+   722→   722→            >
+   723→   723→              <Code className="w-3.5 h-3.5" /> Practice
+   724→   724→            </button>
+   725→   725→          </div>
+   726→   726→
+   727→   727→          {/* SQL Status */}
+   728→   728→          <div className="flex items-center gap-2">
+   729→   729→            {sqlLoading && <span className="text-xs text-slate-500 animate-pulse">Loading SQL Engine...</span>}
+   730→   730→            {sqlReady && <span className="text-xs text-emerald-500 flex items-center gap-1"><CheckCircle className="w-3 h-3" /> SQL Ready</span>}
+   731→   731→            {!sqlLoading && !sqlReady && <span className="text-xs text-red-400">SQL Engine Failed</span>}
+   732→   732→          </div>
+   733→   733→        </div>
+   734→   734→      </header>
+   735→   735→
+   736→   736→      {/* Content */}
+   737→   737→      {mode === 'learn' ? (
+   738→   738→        <LearnMode SQL={SQL} sqlReady={sqlReady} />
+   739→   739→      ) : (
+   740→   740→        <PracticeMode SQL={SQL} sqlReady={sqlReady} />
+   741→   741→      )}
+   742→   742→    </div>
+   743→   743→  );
+   744→   744→}
+   745→   745→

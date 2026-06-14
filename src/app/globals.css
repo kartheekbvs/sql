@@ -1,0 +1,65 @@
+@import "tailwindcss";
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #334155 transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: #334155;
+  border-radius: 3px;
+}
+
+body {
+  background: #020617;
+  color: #f8fafc;
+}
+
+pre, code {
+  font-family: 'Courier New', Courier, monospace;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.3s ease-in-out;
+}
+
+.sql-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.8rem;
+}
+
+.sql-table th {
+  background: rgba(16, 185, 129, 0.15);
+  color: #34d399;
+  padding: 6px 12px;
+  text-align: left;
+  border: 1px solid rgba(51, 65, 85, 0.5);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.sql-table td {
+  padding: 5px 12px;
+  border: 1px solid rgba(51, 65, 85, 0.5);
+  color: #cbd5e1;
+  white-space: nowrap;
+}
+
+.sql-table tr:nth-child(even) td {
+  background: rgba(30, 41, 59, 0.3);
+}
