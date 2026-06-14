@@ -1,0 +1,6 @@
+1:"$Sreact.fragment"
+2:I[29893,["/sql/_next/static/chunks/30dja9o837vyc.js"],"ViewportBoundary"]
+3:I[29893,["/sql/_next/static/chunks/30dja9o837vyc.js"],"MetadataBoundary"]
+4:"$Sreact.suspense"
+5:I[68433,["/sql/_next/static/chunks/30dja9o837vyc.js"],"IconMark"]
+0:{"rsc":["$","$1","h",{"children":[null,["$","$L2",null,{"children":[["$","meta","0",{"charSet":"utf-8"}],["$","meta","1",{"name":"viewport","content":"width=device-width, initial-scale=1"}]]}],["$","div",null,{"hidden":true,"children":["$","$L3",null,{"children":["$","$4",null,{"name":"Next.Metadata","children":[["$","title","0",{"children":"SQL Mastery — Zero to Placement Ready"}],["$","meta","1",{"name":"description","content":"Interactive SQL learning platform with 108 tutorial topics and 200+ practice problems. Master SELECT, JOINs, GROUP BY, Window Functions and ace your placements."}],["$","meta","2",{"name":"author","content":"SQL Mastery"}],["$","meta","3",{"name":"keywords","content":"SQL,database,interview,placement,LeetCode,HackerRank,JOINs,queries"}],["$","link","4",{"rel":"icon","href":"data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🗃️</text></svg>"}],["$","$L5","5",{}]]}]}]}],null]}],"isPartial":false,"staleTime":300,"varyParams":null,"buildId":"CY5f_E-uJ9wXorhK2WjFO"}
