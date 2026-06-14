@@ -6,19 +6,98 @@ import { problems, Problem, TestCase } from '@/lib/problems';
 import { useLearningStore } from '@/lib/store';
 import { cn } from '@/lib/utils';
 
-// ─── SQL Execution Engine (Server-side via API) ────────────────
-async function executeQueryApi(schema: string, query: string): Promise<{ columns: string[]; rows: any[][]; error: string | null }> {
+// ─── Client-Side SQL.js Engine ─────────────────────────────────
+let sqlJsModule: any = null;
+let sqlJsLoading: Promise<any> | null = null;
+
+async function getSqlJs(): Promise<any> {
+  if (sqlJsModule) return sqlJsModule;
+  if (sqlJsLoading) return sqlJsLoading;
+
+  sqlJsLoading = (async () => {
+    try {
+      const initSqlJs = (await import('sql.js')).default;
+      const SQL = await initSqlJs({
+        locateFile: (file: string) => `/${file}`,
+      });
+      sqlJsModule = SQL;
+      return SQL;
+    } catch (e) {
+      sqlJsLoading = null;
+      throw e;
+    }
+  })();
+
+  return sqlJsLoading;
+}
+
+async function executeQueryClient(schema: string, query: string): Promise<{ columns: string[]; rows: any[][]; error: string | null }> {
   try {
-    const res = await fetch('/api/sql', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query, schema }),
-    });
-    const data = await res.json();
-    return { columns: data.columns || [], rows: data.rows || [], error: data.error || null };
+    const SQL = await getSqlJs();
+    const db = new SQL.Database();
+    try {
+      db.run(schema);
+      const result = db.exec(query);
+      if (result.length > 0) {
+        return { columns: result[0].columns, rows: result[0].values, error: null };
+      }
+      return { columns: [], rows: [], error: null };
+    } catch (e: any) {
+      return { columns: [], rows: [], error: e.message };
+    } finally {
+      db.close();
+    }
   } catch (e: any) {
-    return { columns: [], rows: [], error: e.message };
+    return { columns: [], rows: [], error: `SQL Engine Error: ${e.message}. Please refresh the page.` };
   }
+}
+
+// Use client-side execution everywhere (works on GitHub Pages)
+const executeQuery = executeQueryClient;
+
+// ─── Schema Parser & Display ───────────────────────────────────
+interface SchemaTable {
+  name: string;
+  columns: string[];
+  sampleRows: any[][];
+}
+
+function parseSchemaTables(schema: string): SchemaTable[] {
+  const tables: SchemaTable[] = [];
+  const createRegex = /CREATE\s+TABLE\s+(\w+)\s*\(([^)]+)\)/gi;
+  let match;
+  while ((match = createRegex.exec(schema)) !== null) {
+    const tableName = match[1];
+    const colDefs = match[2].split(',').map(c => c.trim()).filter(c => !c.match(/^(PRIMARY\s+KEY|FOREIGN\s+KEY|CONSTRAINT|UNIQUE|CHECK|INDEX)/i));
+    const columns = colDefs.map(c => {
+      const parts = c.trim().split(/\s+/);
+      return parts[0].replace(/"/g, '');
+    }).filter(c => c.length > 0);
+    if (columns.length > 0) {
+      tables.push({ name: tableName, columns, sampleRows: [] });
+    }
+  }
+
+  // Extract sample data from INSERT statements
+  for (const table of tables) {
+    const insertRegex = new RegExp(`INSERT\\s+INTO\\s+${table.name}\\s+VALUES\\s*\\(([^)]+\\))`, 'gi');
+    let insertMatch;
+    let count = 0;
+    while ((insertMatch = insertRegex.exec(schema)) !== null && count < 3) {
+      const rowStr = insertMatch[1];
+      const values = rowStr.split(',').map(v => {
+        v = v.trim();
+        if (v.toUpperCase() === 'NULL') return null;
+        if ((v.startsWith("'") && v.endsWith("'")) || (v.startsWith('"') && v.endsWith('"'))) return v.slice(1, -1);
+        const num = Number(v);
+        return isNaN(num) ? v : num;
+      });
+      table.sampleRows.push(values);
+      count++;
+    }
+  }
+
+  return tables;
 }
 
 // ─── Test Case Validation Engine ───────────────────────────────
@@ -83,7 +162,7 @@ async function runTestCases(problem: Problem, userQuery: string): Promise<TestCa
   const results: TestCaseResult[] = [];
 
   // Run the solution query to get expected result
-  const solutionResult = await executeQueryApi(problem.schema, problem.solution);
+  const solutionResult = await executeQuery(problem.schema, problem.solution);
   if (solutionResult.error) {
     return problem.testCases.map(tc => ({
       id: tc.id,
@@ -95,7 +174,7 @@ async function runTestCases(problem: Problem, userQuery: string): Promise<TestCa
   }
 
   // Run the user's query
-  const userResult = await executeQueryApi(problem.schema, userQuery);
+  const userResult = await executeQuery(problem.schema, userQuery);
   if (userResult.error) {
     return problem.testCases.map(tc => ({
       id: tc.id,
@@ -344,6 +423,62 @@ function ResultTable({ columns, rows, maxRows = 50, highlight }: { columns: stri
   );
 }
 
+// ─── Schema Display Component ─────────────────────────────────
+function SchemaDisplay({ schema }: { schema: string }) {
+  const [tables, setTables] = useState<SchemaTable[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const parsed = parseSchemaTables(schema);
+    setTables(parsed);
+    setLoading(false);
+  }, [schema]);
+
+  if (loading) return <div className="text-slate-500 text-xs p-2">Loading schema...</div>;
+  if (tables.length === 0) return null;
+
+  return (
+    <div className="space-y-3">
+      {tables.map((table) => (
+        <div key={table.name} className="bg-slate-900/80 rounded-lg border border-slate-700/50 overflow-hidden">
+          <div className="px-3 py-2 bg-slate-800/60 border-b border-slate-700/50 flex items-center gap-2">
+            <span className="text-emerald-400 text-xs font-bold font-mono">{table.name}</span>
+            <span className="text-slate-500 text-[10px]">{table.columns.length} columns</span>
+            {table.sampleRows.length > 0 && <span className="text-slate-600 text-[10px]">| {table.sampleRows.length} sample rows shown</span>}
+          </div>
+          <div className="overflow-x-auto">
+            <table className="sql-table text-xs">
+              <thead>
+                <tr>{table.columns.map((col, i) => <th key={i} className="text-[11px] px-2 py-1.5">{col}</th>)}</tr>
+              </thead>
+              <tbody>
+                {table.sampleRows.length > 0 ? (
+                  table.sampleRows.map((row, ri) => (
+                    <tr key={ri}>
+                      {table.columns.map((_, ci) => (
+                        <td key={ci} className="px-2 py-1 text-[11px]">
+                          {row[ci] === null || row[ci] === undefined ? <span className="text-slate-600 italic">NULL</span> : String(row[ci])}
+                        </td>
+                      ))}
+                    </tr>
+                  ))
+                ) : (
+                  <tr><td colSpan={table.columns.length} className="px-2 py-1 text-[11px] text-slate-600 italic text-center">No sample data</td></tr>
+                )}
+                <tr>
+                  <td colSpan={table.columns.length} className="px-2 py-1 text-[10px] text-slate-600 text-center border-t border-slate-700/30">
+                    ... more rows in database
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ─── SQL Editor Component ──────────────────────────────────────
 function SqlEditor({ initialCode, onRun, schema, runLabel }: { initialCode: string; onRun: (result: { columns: string[]; rows: any[][]; error: string | null }, query: string) => void; schema: string; runLabel?: string }) {
   const [code, setCode] = useState(initialCode);
@@ -354,7 +489,7 @@ function SqlEditor({ initialCode, onRun, schema, runLabel }: { initialCode: stri
 
   const handleRun = useCallback(async () => {
     setRunning(true);
-    const result = await executeQueryApi(schema, code);
+    const result = await executeQuery(schema, code);
     onRun(result, code);
     setRunning(false);
   }, [code, schema, onRun]);
@@ -856,7 +991,7 @@ function PracticeMode() {
   const handleRunTests = useCallback(async () => {
     if (!currentProblem || !lastQuery) return;
     setIsRunning(true);
-    const result = await executeQueryApi(currentProblem.schema, lastQuery);
+    const result = await executeQuery(currentProblem.schema, lastQuery);
     setQueryResult(result);
     if (!result.error) {
       const tcResults = await runTestCases(currentProblem, lastQuery);
@@ -969,6 +1104,19 @@ function PracticeMode() {
                   <Flask className="w-3.5 h-3.5" />
                   <span>{currentProblem.testCases.length} test cases</span>
                 </div>
+              </div>
+
+              {/* Database Schema */}
+              <div className="bg-slate-900/50 rounded-xl border border-slate-700 overflow-hidden">
+                <details open>
+                  <summary className="px-4 py-3 cursor-pointer flex items-center gap-2 hover:bg-slate-800/30 transition-colors">
+                    <span className="text-xs font-semibold text-slate-300">Database Schema & Sample Data</span>
+                    <span className="text-[10px] text-slate-600">(click to expand/collapse)</span>
+                  </summary>
+                  <div className="px-4 pb-4">
+                    <SchemaDisplay schema={currentProblem.schema} />
+                  </div>
+                </details>
               </div>
 
               {/* SQL Editor */}
@@ -1124,6 +1272,34 @@ function PracticeMode() {
   );
 }
 
+// ─── SQL Engine Status ─────────────────────────────────────────
+function SqlEngineStatus() {
+  const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+
+  useEffect(() => {
+    getSqlJs()
+      .then(() => setStatus('ready'))
+      .catch(() => setStatus('error'));
+  }, []);
+
+  return (
+    <div className="flex items-center gap-2">
+      {status === 'loading' && (
+        <span className="text-xs text-amber-400 flex items-center gap-1">
+          <svg className="w-3 h-3 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="30 70" /></svg>
+          Loading SQL Engine...
+        </span>
+      )}
+      {status === 'ready' && (
+        <span className="text-xs text-emerald-500 flex items-center gap-1"><CheckCircle className="w-3 h-3" /> SQL Engine Ready</span>
+      )}
+      {status === 'error' && (
+        <span className="text-xs text-red-400 flex items-center gap-1"><XCircle className="w-3 h-3" /> SQL Engine Failed</span>
+      )}
+    </div>
+  );
+}
+
 // ─── Main App ──────────────────────────────────────────────────
 export default function Home() {
   const { mode, setMode } = useLearningStore();
@@ -1164,9 +1340,7 @@ export default function Home() {
           </div>
 
           {/* SQL Status */}
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-emerald-500 flex items-center gap-1"><CheckCircle className="w-3 h-3" /> SQL Engine Ready</span>
-          </div>
+          <SqlEngineStatus />
         </div>
       </header>
 
